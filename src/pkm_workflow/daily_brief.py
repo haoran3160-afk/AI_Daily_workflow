@@ -178,6 +178,15 @@ def reviewer_schema():
     return json.dumps(REVIEWER_SCHEMA, ensure_ascii=False).encode("utf-8")
 
 
+def role_envelope_schema(role):
+    properties = {"model": {"type": "string", "enum": ["gpt-5.6-luna"]}, "session_id": TEXT}
+    if role == "generator":
+        properties["draft"] = GENERATOR_SCHEMA
+    else:
+        properties |= {"review_request_hash": TEXT, "decisions": REVIEWER_SCHEMA["properties"]["decisions"]}
+    return json.dumps(_closed(properties), ensure_ascii=False).encode("utf-8")
+
+
 def validate_draft(draft, evidence, context, *, requested_sections=None, **_unused):
     if not matches_schema(draft, GENERATOR_SCHEMA):
         raise ValueError("OUTPUT_SCHEMA_INVALID")

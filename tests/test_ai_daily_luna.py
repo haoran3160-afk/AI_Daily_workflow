@@ -272,6 +272,20 @@ def test_single_structure_repair_budget(workflow):
     assert exhausted["status"] == "SCHEMA_REPAIR_EXHAUSTED"
 
 
+def test_delivered_schema_describes_full_role_envelope_and_bare_draft_can_repair_once(workflow):
+    from pkm_workflow.daily_brief import matches_schema
+    call, _ = workflow
+    prepared = call("prepare")
+    schema = json.loads(Path(prepared["schema_path"]).read_text(encoding="utf-8"))
+    assert matches_schema(draft(), schema)
+    assert not matches_schema(draft()["draft"], schema)
+    save(prepared["draft_path"], draft()["draft"])
+    repair = call("review", run_id=prepared["run_id"])
+    assert repair["status"] == "SCHEMA_REPAIR_REQUIRED"
+    save(repair["output_path"], draft())
+    assert call("review", run_id=prepared["run_id"])["status"] == "REVIEWER_READY"
+
+
 def test_model_name_cannot_stand_in_for_real_role_identity(workflow):
     call, _ = workflow
     prepared = call("prepare")

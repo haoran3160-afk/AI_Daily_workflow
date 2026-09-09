@@ -47,7 +47,7 @@ def test_six_daily_runs_feed_one_weekly_without_fetching_or_repeating_daily_outp
         candidates = tuple(Candidate(
             evidence_id=f"{section}-{day}", source="Primary source", title=f"{section} {day}",
             link=f"https://example.com/{section}/{day}", published=str(day),
-            summary=f"Original evidence from {day}: the experiment records tool failures.",
+            summary=f"by Jane Doe\nOriginal evidence from {day}: the experiment records tool failures.",
             content_type="paper" if section == "research" else "news", fulltext_enriched=True,
             story_type=section, evidence_role="PAPER_PRIMARY" if section == "research" else "PRIMARY_OR_EXPERT",
         ) for section in sections_for(day, "daily"))
@@ -63,8 +63,12 @@ def test_six_daily_runs_feed_one_weekly_without_fetching_or_repeating_daily_outp
     weekly = call("prepare", sunday, mode="production")
     assert weekly["edition"] == "weekly"
     assert len(weekly["requested_sections"]) == 6
-    collection = collect_weekly(sunday, tmp_path, vault)
+    from pkm_workflow import ai_daily_luna as luna
+    with monkeypatch.context() as only_durable:
+        only_durable.setattr(luna, "_check_review", forbidden)
+        collection = collect_weekly(sunday, tmp_path, vault)
     assert all(len(candidate.source_links) == 2 for candidate in collection.candidates)
+    assert all("Verified author: Jane Doe" in candidate.summary for candidate in collection.candidates)
     assert len(collection.audit["published_days"]) == 6
     result = complete(weekly, sunday)
     assert result["vault_write"] is True

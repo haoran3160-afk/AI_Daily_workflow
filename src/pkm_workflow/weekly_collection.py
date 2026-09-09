@@ -28,7 +28,8 @@ def _material(prepared, runtime, run_id):
     candidates = luna._candidates(state)
     packet = luna._read(run / "generator-input.json")["candidates"]
     return {"stories": list(stories), "candidates": [
-        asdict(candidates[row["evidence_id"]]) | {"summary": row["summary"]} for row in packet
+        asdict(candidates[row["evidence_id"]]) | {"summary": row["summary"],
+        "observed_author": row.get("observed_author")} for row in packet
     ]}
 
 
@@ -80,11 +81,13 @@ def collect_weekly(day, runtime, vault):
         for published_day, row, judgments in items:
             passages.append(
                 f"Daily publication: {published_day}; original date: {row['published']}; source: {row['source']}.\n"
+                f"Verified author: {row.get('observed_author') or 'not recorded; do not infer from source name'}.\n"
                 f"Original evidence excerpt:\n{row['summary'][:excerpt_chars]}\n"
                 f"Prior editorial interpretation (not primary fact): {' '.join(judgments)[:240]}"
             )
             links.append((f"{row['source']} · {row['published']}", row["link"]))
         latest = dict(items[-1][1])
+        latest.pop("observed_author", None)
         latest["pillars"] = tuple(latest["pillars"])
         latest["profile_refs"] = tuple(latest["profile_refs"])
         latest["source_links"] = tuple(links)

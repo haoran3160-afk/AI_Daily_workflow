@@ -50,6 +50,7 @@ SHANGHAI = timezone(timedelta(hours=8))
 STRATEGY_HASH = editorial._digest({
     "selection_policy": "rotating_two_daily_six_weekly_normalized_history_v2",
     "paper_evidence": "primary_paper_complete_sentences_v1",
+    "weekly_provenance": "per_source_author_v1",
     "contract": CONTRACT, "model": MODEL, "reasoning": "medium",
     "generator_prompt": GENERATOR_PROMPT, "reviewer_prompt": REVIEWER_PROMPT,
     "generator_schema": json.loads(mvp_generator_output_schema()),
@@ -169,7 +170,7 @@ def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
                        "published_days": collected.audit.get("published_days", [])}
     _write(run / "generator-input.json", generator_input)
     publishing._write_new(run / "generator-instructions.txt", GENERATOR_PROMPT.encode("utf-8"))
-    publishing._write_new(run / "generator-schema.json", mvp_generator_output_schema())
+    publishing._write_new(run / "generator-schema.json", brief.role_envelope_schema("generator"))
     state = {
         "run_id": run_id, "content_date": str(day), "mode": mode,
         "edition": edition, "sections": list(requested),
@@ -238,7 +239,7 @@ def _role_output(path: Path, role: str):
         "model", "session_id", "review_request_hash", "decisions",
     }
     if set(envelope) != expected:
-        raise StageError("ROLE_ENVELOPE_INVALID")
+        raise StageError("ROLE_ENVELOPE_INVALID", repairable=role == "generator" and set(envelope) == {"stories"})
     if envelope["model"] != MODEL:
         raise StageError("LUNA_MODEL_REQUIRED")
     if not isinstance(envelope["session_id"], str) or not re.fullmatch(
@@ -317,7 +318,7 @@ def _review(run, state):
         review_input, editorial._canonical(review_packet | {"review_request_hash": review_hash}) + b"\n",
     )
     publishing._write_or_verify(_review_file(run, "reviewer-instructions", ".txt"), REVIEWER_PROMPT.encode("utf-8"))
-    publishing._write_or_verify(_review_file(run, "reviewer-schema"), mvp_reviewer_output_schema())
+    publishing._write_or_verify(_review_file(run, "reviewer-schema"), brief.role_envelope_schema("reviewer"))
     frozen = {
         "draft_file_hash": _file_hash(draft_path), "draft_filename": draft_path.name,
         "generator_session_id": envelope["session_id"],
@@ -448,7 +449,8 @@ def _report(run, state, accepted, decisions, status, code, *, generator=None, re
                   "selected_urls": selected, "review_decisions": decisions.get("decisions", [])},
         "reviewed_material": {
             "stories": list(accepted),
-            "candidates": [asdict(evidence[row["evidence_id"]]) | {"summary": row["summary"]}
+            "candidates": [asdict(evidence[row["evidence_id"]]) | {"summary": row["summary"],
+                           "observed_author": row.get("observed_author")}
                            for row in _read(run / "generator-input.json")["candidates"]
                            if row["evidence_id"] in selected_ids],
         },
@@ -575,6 +577,8 @@ def run_luna_stage(
             selected_edition = edition or edition_for(day)
             if selected_edition == "weekly" and mode == "production" and day.weekday() != 6:
                 raise StageError("WEEKLY_NOT_DUE")
+            if selected_edition == "daily" and mode == "production" and day.weekday() == 6:
+                raise StageError("DAILY_NOT_DUE")
             return _prepare(runtime, vault, day, mode, collect, context_loader, selected_edition)
         if not run_id:
             raise StageError("RUN_ID_REQUIRED")
@@ -583,6 +587,8 @@ def run_luna_stage(
             raise StageError("EDITION_MISMATCH")
         if mode == "production" and state["edition"] == "weekly" and day.weekday() != 6:
             raise StageError("WEEKLY_NOT_DUE")
+        if mode == "production" and state["edition"] == "daily" and day.weekday() == 6:
+            raise StageError("DAILY_NOT_DUE")
         if stage == "prepare":
             if (run / "run-report.json").exists():
                 return _finalize(run, state, "shadow", False, runtime, vault)
