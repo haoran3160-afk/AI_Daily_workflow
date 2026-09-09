@@ -1,7 +1,10 @@
 # External configuration
 
 Supply a source catalog and an approved context outside Git. Their schemas and
-validation live in `source_catalog.py` and `user_context_v75.py`.
+validation live in [source_catalog.py](../src/pkm_workflow/source_catalog.py) and
+[user_context_v75.py](../src/pkm_workflow/user_context_v75.py).
+
+For actual deployment, read the [configuration reference](../docs/configuration.md).
 
 Minimal conceptual context (not a production authorization file):
 
