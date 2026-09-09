@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ai-daily-workflow"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first AI digest workflow that streams RSS feeds, arXiv papers, and YouTube videos into your Obsidian Vault."
 authors = [{ name = "obsidian-pkm contributors" }]
 license = { text = "MIT" }

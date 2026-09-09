@@ -32,5 +32,16 @@ Only Codex performs the model roles. Python never invokes DeepSeek, an OpenAI AP
 or Codex CLI. An existing daily note is never silently overwritten. Local scheduled
 operation requires the host and app to be available; no cloud availability promise.
 
-Next change, after this baseline is pushed: two-module rotating daily briefs and a
-six-module weekly synthesis. The baseline deliberately retains six-item behavior.
+## Current cadence
+
+Mon/Thu: research + AI practice. Tue/Fri: builders + venture/industry.
+Wed/Sat: cognition + GitHub. Sunday: one six-module weekly synthesis instead of a
+daily. Daily evidence is capped at 12,000 characters; weekly at 24,000.
+
+See [the operating contract](docs/ai-daily-luna.md). Weekly uses verified daily
+history, with source dates and original links; it never fetches another news dump.
+The immutable `baseline-six-modules` tag retains the pre-change six-item version.
+
+Development lives in this repository. The existing local engine deployment remains
+in its original MVP checkout; only reviewed runtime changes are synchronized there.
+Neither private configuration nor the user's Vault is migrated into this repository.

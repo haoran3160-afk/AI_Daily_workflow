@@ -75,6 +75,7 @@ class Candidate:
     pillar_exposure: bool = False
     editorial_score: int = 5000
     github_stars: int | None = None
+    source_links: tuple[tuple[str, str], ...] = ()
 
     def model_payload(self) -> dict[str, object]:
         return {
