@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from workflow_contracts import ObservedSourceRecord, SourceHealth
+from .workflow_contracts import ObservedSourceRecord, SourceHealth
 
 SAFE_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 EVENT_PATTERN = re.compile(r"^(\d{8})-([a-z-]+)\.json$")

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 import pytest
 from pydantic import ValidationError
 
-from workflow_contracts import (
+from pkm_workflow.workflow_contracts import (
     AuthorizationContext,
     CurationDecision,
     CurationDecisionKind,

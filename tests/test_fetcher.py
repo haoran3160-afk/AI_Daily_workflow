@@ -1,7 +1,7 @@
 import time
 from types import SimpleNamespace
 
-import fetcher
+from pkm_workflow import fetcher
 
 
 def _feed(entries):

@@ -989,7 +989,7 @@ def collect_v75_candidates(
 def default_collection_ports(catalog: SourceCatalog) -> CollectionPorts:
     """Adapt the existing RSS/fulltext fetcher without enabling legacy curation."""
 
-    import fetcher
+    from . import fetcher
 
     limits = _policy_mapping(catalog.policies, "limits")
     summary_limit = _policy_int(limits, "metadata_summary_chars")

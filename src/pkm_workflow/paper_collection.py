@@ -54,7 +54,7 @@ class _CitationMeta(HTMLParser):
 
 def paper_candidates(day, used_urls, *, get_text=public_text, fulltext=None):
     if fulltext is None:
-        from fetcher import _fetch_article_fulltext
+        from .fetcher import _fetch_article_fulltext
         def fulltext(url):
             return _fetch_article_fulltext(url, max_chars=120_000)
     topic = research_topic(day)

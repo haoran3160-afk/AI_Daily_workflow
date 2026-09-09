@@ -25,8 +25,8 @@ from requests.adapters import HTTPAdapter
 from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 from urllib3.util.retry import Retry
 
-from source_registry import SourceRegistry
-from workflow_contracts import FetchDiagnostic, FetchReasonCode, SourceHealth
+from .source_registry import SourceRegistry
+from .workflow_contracts import FetchDiagnostic, FetchReasonCode, SourceHealth
 
 log = logging.getLogger("pkm.fetcher")
 
