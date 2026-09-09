@@ -1,0 +1,121 @@
+[build-system]
+requires = ["setuptools>=70", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-daily-workflow"
+version = "0.1.0"
+description = "Local-first AI digest workflow that streams RSS feeds, arXiv papers, and YouTube videos into your Obsidian Vault."
+authors = [{ name = "obsidian-pkm contributors" }]
+license = { text = "MIT" }
+readme = "README.md"
+requires-python = ">=3.10"
+keywords = ["obsidian", "pkm", "rss", "knowledge-management", "automation", "ai"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Office/Business :: Scheduling",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+]
+dependencies = []
+
+[project.optional-dependencies]
+legacy = [
+    "requests>=2.32.3",
+    "feedparser>=6.0.11",
+    "python-dotenv>=1.0.1",
+    "schedule>=1.2.2",
+    "tenacity>=8.5.0",
+    "Jinja2>=3.1.4",
+    "pydantic>=2.7.0",
+    "rich>=13.7.0",
+    "structlog>=24.1.0",
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[project.scripts]
+pkm = "pkm_workflow.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/haoran3160-afk/AI_Daily_workflow"
+Repository = "https://github.com/haoran3160-afk/AI_Daily_workflow"
+Issues = "https://github.com/haoran3160-afk/AI_Daily_workflow/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+addopts = "-q --tb=short"
+pythonpath = [".", "src"]
+
+[tool.coverage.run]
+# Use the repository path, not the import name.  A separately installed
+# namespace package named ``pkm_workflow`` would otherwise make coverage.py
+# resolve the wrong package and silently collect zero production data.
+source = ["src/pkm_workflow"]
+branch = true
+omit = [
+    "tests/*",
+    ".venv/*",
+    "setup.py",
+    "dev-artifacts/parse_ruff.py",
+    "fetcher_registry.py",
+    "pkm_bridge.py",
+    "main.py",
+    "knowledge_health_check.py",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 90
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+exclude = [
+    "dev-artifacts/parse_ruff.py",
+    "dev-artifacts/git_log.txt",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",
+    "W",
+    "F",
+    "I",
+    "B",
+    "UP",
+]
+ignore = [
+    "E501",
+    "B008",
+]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "config_schema",
+    "daily_curation",
+    "digest_copy",
+    "fetcher",
+    "formatter",
+    "llm_digest",
+    "state_schema",
+    "ui_server",
+    "workflow_contracts",
+    "writer",
+]
+
+[tool.mypy]
+python_version = "3.11"
+ignore_missing_imports = true
+warn_return_any = false
+warn_unused_ignores = true
