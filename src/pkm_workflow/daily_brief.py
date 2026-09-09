@@ -63,6 +63,8 @@ priority为DEEP_READ/USEFUL/EXPLORE，对应个人推荐五星/四星/三星，�
 日报恰好两条；周报按六个模块综合这一周已有材料，不把日报逐条粘贴，不把旧资讯当新发布。
 周报每模块约200至350中文字，归纳主要观察、证据间的联系/差异、仍需观察的问题；
 只有一条材料就坦诚这是单例，不编造跨日趋势。weekly_excerpt标有原日期，事实来自原始摘录，旧判断仅作线索。
+周报的个人署名逐条以Verified author为准；not recorded时标题和正文只称“原文/该案例”，
+不能从来源名或旧解读补出人名。周报研究栏也遵守精炼的1至3段，不套用日报长篇篇幅。
 draft.stories按requested_sections给出；每条字段为section,evidence_id,title,body（字符串数组）,takeaway,
 connection,context_refs（真实路径数组）,action（null或字符串）,priority。
 不得输出URL、Markdown、HTML或文件路径。每条只能引用候选中同section的evidence_id。
@@ -179,7 +181,8 @@ def reviewer_schema():
 
 
 def role_envelope_schema(role):
-    properties = {"model": {"type": "string", "enum": ["gpt-5.6-luna"]}, "session_id": TEXT}
+    properties = {"model": {"type": "string", "enum": ["gpt-5.6-luna"]},
+                  "session_id": {"type": "string", "pattern": r"^(?:[0-9a-fA-F-]{36}|/root/[a-z0-9_/]+)$"}}
     if role == "generator":
         properties["draft"] = GENERATOR_SCHEMA
     else:

@@ -1,13 +1,17 @@
 import base64
 from datetime import date
 
+import pytest
+
 from pkm_workflow.module_collection import _due_for_reading_day, collect_modules
 from pkm_workflow.source_catalog import SourceCatalog, SourceDefinition
 from pkm_workflow.user_context_v75 import Pillar, UserContextBundle
 from pkm_workflow.v75_collection import CollectionPorts, MetadataItem, MetadataObservation
 
 
-def test_only_selected_modules_fetch_and_published_slash_variant_is_not_recommended():
+@pytest.mark.parametrize("published_url", ["https://example.com/read/", "https://example.com/read/#section",
+                                          "https://example.com/read/?utm_source=daily&utm_campaign=ai"])
+def test_only_selected_modules_fetch_and_published_slash_variant_is_not_recommended(published_url):
     def source(identifier, pillar):
         return SourceDefinition(identifier, identifier, identifier, "RSS_ATOM", ("https://example.com/feed",),
                                 "ACTIVE", "COGNITIVE_WEEKLY", False, "DAILY", (pillar,), "EXPERT",
@@ -28,7 +32,7 @@ def test_only_selected_modules_fetch_and_published_slash_variant_is_not_recommen
         return {"html_url": f"https://github.com/{repo}", "full_name": repo, "private": False,
                 "archived": False, "license": {"spdx_id": "MIT"}, "pushed_at": "2026-09-08"}
     result = collect_modules(date(2026, 9, 9), catalog=catalog, user_context=context,
-                             used_urls={"https://example.com/read/"},
+                             used_urls={published_url},
                              ports=CollectionPorts(metadata, lambda _: "Decision framework assumptions. " * 50),
                              get_github=github, requested_sections=("cognition", "github"))
     assert seen == ["cognition"]
@@ -43,3 +47,8 @@ def test_weekly_sources_are_not_stranded_on_summary_only_sunday():
     assert _due_for_reading_day(source, date(2026, 9, 9), ("cognition", "github"))
     assert not _due_for_reading_day(source, date(2026, 9, 12), ("cognition", "github"))
     assert not _due_for_reading_day(source, date(2026, 9, 8), ("builder", "vc"))
+
+
+def test_url_dedup_keeps_semantic_query_parameters():
+    from pkm_workflow.v75_collection import _normalize_url
+    assert _normalize_url("https://example.com/article?id=1") != _normalize_url("https://example.com/article?id=2")
