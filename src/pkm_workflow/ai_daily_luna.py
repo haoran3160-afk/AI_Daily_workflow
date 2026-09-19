@@ -214,8 +214,11 @@ def _prepare_collection(run, state, runtime, vault, collect, context_loader):
     day = date.fromisoformat(state["content_date"])
     edition = state["edition"]
     requested = state["sections"]
+    collected = None
     try:
         collected = collect(day) if collect else _collect(day, runtime, vault, edition)
+        if collected.audit.get("retryable_collection_failure"):
+            raise OSError("TRANSIENT_SOURCE_FAILURE")
     except (OSError, ValueError, TimeoutError) as error:
         error_path = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
         failure = _result(
@@ -223,6 +226,7 @@ def _prepare_collection(run, state, runtime, vault, collect, context_loader):
             4, error_code="COLLECTION_FAILED", run_id=run.name,
             report_path=str(error_path), collection_attempt_count=attempt,
             retryable=attempt == 1 and isinstance(error, OSError),
+            collection_audit=dict(collected.audit) if collected is not None else {},
         )
         _sealed_write(error_path, failure)
         return failure

@@ -148,6 +148,9 @@ def classify_fetch_result(
     elif status_code == 404:
         reason = FetchReasonCode.HTTP_404
         retryable = False
+    elif status_code == 429 or (status_code is not None and status_code >= 500):
+        reason = FetchReasonCode.NETWORK_ERROR
+        retryable = True
     elif (
         entries_count == 0 and "html" in content_type.lower() and "xml" not in content_type.lower()
     ):
@@ -257,7 +260,9 @@ def _extract_primary_text_from_html(raw_html: str, max_chars: int) -> str:
     return body.strip()[:max_chars]
 
 
-def _fetch_article_fulltext(url: str, max_chars: int = FULLTEXT_FETCH_MAX_CHARS) -> str:
+def _fetch_article_fulltext(
+    url: str, max_chars: int = FULLTEXT_FETCH_MAX_CHARS, *, raise_transient: bool = False
+) -> str:
     """Fetch article HTML and extract readable text for higher-fidelity summarization."""
 
     def public_https(candidate: str) -> bool:
@@ -319,6 +324,12 @@ def _fetch_article_fulltext(url: str, max_chars: int = FULLTEXT_FETCH_MAX_CHARS)
             return ""
         return extracted
     except Exception as exc:
+        status = getattr(getattr(exc, "response", None), "status_code", 0) or 0
+        network_error = isinstance(exc, (requests.Timeout, requests.ConnectionError)) and not isinstance(
+            exc, requests.exceptions.SSLError
+        )
+        if raise_transient and (network_error or status == 429 or status >= 500):
+            raise OSError("FULLTEXT_NETWORK_ERROR") from exc
         log.debug(f"fulltext.fetch.fail | url={url} error={exc}")
         return ""
 

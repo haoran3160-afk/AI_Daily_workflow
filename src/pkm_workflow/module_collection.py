@@ -52,6 +52,8 @@ def github_json(endpoint):
         timeout=25, check=False,
     )
     if process.returncode:
+        if re.search(r"HTTP (?:429|5\d\d)|timed? out|connection|no such host|network", process.stderr, re.I):
+            raise OSError("GITHUB_NETWORK_ERROR")
         raise ValueError("GITHUB_FETCH_FAILED")
     value = json.loads(process.stdout)
     if not isinstance(value, dict):
@@ -75,7 +77,9 @@ def github_candidates(day, used_urls, get_json=github_json):
             discovered = get_json("search/repositories?" + query).get("items", [])
             repos = tuple(row["full_name"] for row in discovered
                           if re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", row.get("full_name", "")))
-        except (OSError, ValueError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
+            return [], [{"source_id": "github_search", "reason": "GITHUB_NETWORK_ERROR"}]
+        except ValueError:
             return [], [{"source_id": "github_search", "reason": "GITHUB_DISCOVERY_UNAVAILABLE"}]
     for repo in repos:
         link = f"https://github.com/{repo}"
@@ -111,7 +115,9 @@ def github_candidates(day, used_urls, get_json=github_json):
                 story_type="github", editorial_score=8000,
                 github_stars=metadata.get("stargazers_count"),
             ))
-        except (OSError, ValueError, KeyError, subprocess.TimeoutExpired):
+        except (OSError, subprocess.TimeoutExpired):
+            failures.append({"source_id": repo, "reason": "GITHUB_NETWORK_ERROR"})
+        except (ValueError, KeyError):
             failures.append({"source_id": repo, "reason": "GITHUB_FREE_README_UNAVAILABLE"})
         if len(found) == 2 or len(failures) >= 3:
             break
@@ -148,11 +154,16 @@ def collect_modules(
     def fetch(source):
         try:
             return source.source_id, ports.fetch_metadata(source, day)
-        except (OSError, ValueError, TimeoutError):
+        except OSError:
+            return source.source_id, MetadataObservation(False, False, "NETWORK_ERROR", ())
+        except ValueError:
             return source.source_id, MetadataObservation(False, False, "FETCH_FAILED", ())
     with ThreadPoolExecutor(max_workers=6) as pool:
         observations = dict(pool.map(fetch, sources))
     core = [s for s in sources if s.coverage_member and s.selection_role == "CORE_DAILY"]
+    transient_sources = {s.source_id for s in sources
+                         if observations[s.source_id].reason_code in {"TIMEOUT", "NETWORK_ERROR"}}
+    transient_modules = {_module(s, None, None) for s in sources if s.source_id in transient_sources}
     health_sources = core or sources
     healthy = sum(observations[s.source_id].healthy for s in health_sources)
     coverage = (_coverage_level(healthy, len(health_sources), a_bps=8500, b_bps=7000)
@@ -168,6 +179,7 @@ def collect_modules(
         "selection_policy": "ONE_STORY_PER_READER_MODULE",
     }
     if coverage is CoverageLevel.INSUFFICIENT:
+        audit["retryable_collection_failure"] = any(s.source_id in transient_sources for s in health_sources)
         return CollectionResult(coverage, len(health_sources), healthy, (), audit=audit)
     ranked = _ranked_metadata(
         observations=observations, sources={s.source_id: s for s in sources},
@@ -199,7 +211,11 @@ def collect_modules(
             audit["fulltext_attempt_count"] += 1
             try:
                 fulltext = ports.fetch_fulltext(url)
-            except (OSError, ValueError, TimeoutError):
+            except OSError:
+                transient_modules.add(module)
+                audit["exclusions"].append({"source_id": row.source.source_id, "reason": "FULLTEXT_NETWORK_ERROR"})
+                fulltext = ""
+            except ValueError:
                 fulltext = ""
             if not _is_public_fulltext(fulltext) or _is_paid_learning_promotion(fulltext):
                 audit["exclusions"].append({"source_id": row.source.source_id, "reason": "FREE_BODY_UNAVAILABLE"})
@@ -233,13 +249,18 @@ def collect_modules(
         projects, failures = github_candidates(day, used_urls, get_json=get_github)
         buckets["github"] = projects
         audit["exclusions"].extend(failures)
+        if any(row["reason"] == "GITHUB_NETWORK_ERROR" for row in failures):
+            transient_modules.add("github")
     if "research" in requested and any(s.adapter_kind == "ARXIV_QUERY" and s.operational_status == "ACTIVE" for s in catalog.sources):
         papers, paper_audit = get_papers(day, used_urls)
         buckets["research"] = papers
         audit["paper_collection"] = paper_audit
         audit["fulltext_attempt_count"] += paper_audit["fulltext_attempts"]
+        if paper_audit.get("retryable"):
+            transient_modules.add("research")
     audit["module_candidates"] = {key: len(value) for key, value in buckets.items()}
     audit["missing_modules"] = [key for key, value in buckets.items() if not value]
+    audit["retryable_collection_failure"] = bool(transient_modules.intersection(audit["missing_modules"]))
     evidence_core = len({s.source_id for s in core} & assessment)
     audit["legacy_core_evidence_sources"] = evidence_core
     available_modules = sum(bool(value) for value in buckets.values())

@@ -61,6 +61,14 @@ without calling models again; mismatching artifacts remain a failure.
 
 Collection has a separate bound: one initial attempt and at most one explicit
 `prepare --run-id RUN_ID` retry after an I/O failure/timeout, on the same day.
+This includes transient source failures reported by collection, not just exceptions
+escaping the collector. Healthy zero yield, invalid data and unavailable/paid bodies
+are not retryable. A temporary source failure matters only when coverage or a
+requested module is missing; a successful evidence packet is never recollected.
+When prepare returns COLLECTION_FAILED with retryable=true, the scheduled runner
+must call prepare once with that run ID before generating. Never retry a terminal
+shortage, reset the date claim, or start another run. This recovery happens before
+model handoff and does not consume or reset the shared editorial repair opportunity.
 The claim points to sealed collection state before fetching. Failed attempts
 remain on disk; retrying never creates a new run or resets model/repair budgets.
 Attempt markers and failure records must agree. Missing, damaged or mismatched
