@@ -86,6 +86,12 @@ Daily collection touches only the requested modules: at most four candidates,
 those modules, not untouched sources elsewhere in the catalog. Both modules must
 have free verified evidence; missing supply is an explicit failure, not filler.
 Preserve the approved source windows and dated unread-classic fallback.
+GitHub selection ranks at most six unread repository metadata records by approved
+project/prior-knowledge and interest terms before fetching README evidence. Stars
+and date rotation do not determine relevance; only two verified candidates reach
+the model. A metadata match is a selection hint, not proof of personal usefulness.
+Generator instructions contain common evidence rules plus only the requested
+modules' editorial guidance; research requirements do not leak into cognition.
 Weekly-cadence RSS sources are checked whenever their module is scheduled
 (both paired reading days). There is no cross-day candidate cache; checking only
 the first day would leave the second day's module empty. Sunday remains no-fetch.
@@ -95,6 +101,9 @@ including their sealed evidence snapshots; it does not run another broad fetch.
 Each module receives a bounded source-labelled bundle (at most three distinct
 originals, normally two), then all six bundles enter one Generator/Reviewer cycle
 within 24,000 characters. Every source retains its own date and original link.
+Within each source, reuse section-aware excerpt selection rather than taking the
+first characters. Preserve source labels and prioritize mechanisms and limits;
+past editorial judgments help select passages but never become primary facts.
 Prior editorial judgments are marked as interpretations, not new source facts.
 Only one source is enough for a single-case recap, never a claimed cross-day trend.
 If one of the six modules lacks trustworthy material, do not manufacture a weekly.

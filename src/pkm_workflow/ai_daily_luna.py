@@ -53,6 +53,7 @@ STRATEGY_HASH = editorial._digest({
     "weekly_provenance": "per_source_author_v1",
     "contract": CONTRACT, "model": MODEL, "reasoning": "medium",
     "generator_prompt": GENERATOR_PROMPT, "reviewer_prompt": REVIEWER_PROMPT,
+    "editorial_guidance": brief.EDITORIAL_GUIDANCE, "weekly_guidance": brief.WEEKLY_GUIDANCE,
     "generator_schema": json.loads(mvp_generator_output_schema()),
     "reviewer_schema": json.loads(mvp_reviewer_output_schema()),
 })
@@ -239,7 +240,8 @@ def _prepare_collection(run, state, runtime, vault, collect, context_loader):
                        "period_end": str(day),
                        "published_days": collected.audit.get("published_days", [])}
     _write(run / "generator-input.json", generator_input)
-    publishing._write_new(run / "generator-instructions.txt", GENERATOR_PROMPT.encode("utf-8"))
+    instructions = brief.generator_instructions(requested, edition)
+    publishing._write_new(run / "generator-instructions.txt", instructions.encode("utf-8"))
     publishing._write_new(run / "generator-schema.json", brief.role_envelope_schema("generator"))
     state = state | {
         "coverage": collected.coverage.value, "evidence_level": collected.evidence_level.value,

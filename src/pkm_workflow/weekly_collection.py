@@ -7,6 +7,7 @@ from datetime import timedelta
 
 from . import ai_daily_production as publishing
 from .daily_brief import SECTIONS
+from .daily_content import _section_aware_excerpt, _semantic_terms
 from .v75_collection import Candidate, CollectionResult, CoverageLevel
 
 
@@ -79,10 +80,16 @@ def collect_weekly(day, runtime, vault):
         links = []
         excerpt_chars = max(400, 3800 // len(items) - 500)
         for published_day, row, judgments in items:
+            original = Candidate(**{key: value for key, value in row.items() if key != "observed_author"})
+            excerpt = _section_aware_excerpt(
+                original, max_chars=excerpt_chars,
+                context_terms=_semantic_terms(" ".join(judgments))
+                | {"limitation", "limitations", "risk", "boundary", "counterexample"},
+            )
             passages.append(
                 f"Daily publication: {published_day}; original date: {row['published']}; source: {row['source']}.\n"
                 f"Verified author: {row.get('observed_author') or 'not recorded; do not infer from source name'}.\n"
-                f"Original evidence excerpt:\n{row['summary'][:excerpt_chars]}\n"
+                f"Original evidence excerpt:\n{excerpt}\n"
                 f"Prior editorial interpretation (not primary fact): {' '.join(judgments)[:240]}"
             )
             links.append((f"{row['source']} · {row['published']}", row["link"]))

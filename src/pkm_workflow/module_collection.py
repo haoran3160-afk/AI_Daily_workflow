@@ -13,6 +13,7 @@ from typing import Any
 from urllib.parse import urlencode
 
 from .daily_brief import SECTIONS
+from .daily_content import _semantic_terms
 from .paper_collection import paper_candidates
 from .source_catalog import SourceCatalog
 from .v75_collection import (
@@ -64,12 +65,11 @@ def github_json(endpoint):
     return value
 
 
-def github_candidates(day, used_urls, get_json=github_json):
+def github_candidates(day, used_urls, get_json=github_json, *, user_context=None):
     """Read only public metadata and README; do not clone/install/run projects."""
     found = []
     failures = []
-    offset = day.toordinal() % len(GITHUB_REPOS)
-    repos = GITHUB_REPOS[offset:] + GITHUB_REPOS[:offset]
+    repos = GITHUB_REPOS
     used = {u.casefold().rstrip("/") for u in used_urls}
     if all(f"https://github.com/{repo}".casefold() in used for repo in repos):
         query = urlencode({
@@ -84,10 +84,15 @@ def github_candidates(day, used_urls, get_json=github_json):
             return [], [{"source_id": "github_search", "reason": "GITHUB_NETWORK_ERROR"}]
         except ValueError:
             return [], [{"source_id": "github_search", "reason": "GITHUB_DISCOVERY_UNAVAILABLE"}]
-    for repo in repos:
-        link = f"https://github.com/{repo}"
-        if link.casefold().rstrip("/") in {u.casefold().rstrip("/") for u in used_urls}:
-            continue
+    fields = user_context.fields if user_context else {}
+    project_terms = _semantic_terms(json.dumps(fields.get("projects", []), ensure_ascii=False))
+    interest_terms = _semantic_terms(json.dumps(fields.get("pillars", []), ensure_ascii=False))
+    if user_context:
+        project_terms |= _semantic_terms(" ".join(user_context.prior_knowledge))
+    ranked = []
+    unread = [repo for repo in repos if f"https://github.com/{repo}".casefold().rstrip("/") not in used]
+    # A bounded metadata shortlist precedes the expensive README fetches.
+    for repo in unread[:6]:
         try:
             metadata = get_json(f"repos/{repo}")
             canonical = metadata["html_url"]
@@ -96,8 +101,24 @@ def github_candidates(day, used_urls, get_json=github_json):
             license_id = (metadata.get("license") or {}).get("spdx_id")
             if (metadata.get("archived") or metadata.get("private")
                     or not license_id or license_id == "NOASSERTION"
-                    or canonical.casefold().rstrip("/") in {u.casefold().rstrip("/") for u in used_urls}):
+                    or canonical.casefold().rstrip("/") in used):
                 continue
+            terms = _semantic_terms(" ".join((
+                metadata["full_name"], metadata.get("description") or "",
+                " ".join(metadata.get("topics", [])),
+            )))
+            score = 3 * len(terms & project_terms) + len(terms & interest_terms)
+            ranked.append((score, repo, metadata))
+        except (OSError, subprocess.TimeoutExpired):
+            failures.append({"source_id": repo, "reason": "GITHUB_NETWORK_ERROR"})
+        except (ValueError, KeyError):
+            failures.append({"source_id": repo, "reason": "GITHUB_FREE_README_UNAVAILABLE"})
+        if len(failures) >= 3:
+            break
+    for score, repo, metadata in sorted(ranked, key=lambda row: (-row[0], row[1])):
+        canonical = metadata["html_url"]
+        license_id = metadata["license"]["spdx_id"]
+        try:
             readme = get_json(f"repos/{repo}/readme")
             body = base64.b64decode(readme["content"]).decode("utf-8", errors="replace")
             if len(body.strip()) < 400:
@@ -115,7 +136,7 @@ def github_candidates(day, used_urls, get_json=github_json):
                 fulltext_enriched=True, source_id="github_" + repo.replace("/", "_"),
                 canonical_origin_id=metadata["full_name"].casefold(),
                 evidence_role="PROJECT_PRIMARY", pillars=("AGENTIC_RESEARCH", "AI_MASTERY"),
-                story_type="github", editorial_score=8000,
+                story_type="github", editorial_score=8000 + min(score, 1000),
                 github_stars=metadata.get("stargazers_count"),
             ))
         except (OSError, subprocess.TimeoutExpired):
@@ -249,7 +270,7 @@ def collect_modules(
         )
         consume(older, classics=True)
     if "github" in requested:
-        projects, failures = github_candidates(day, used_urls, get_json=get_github)
+        projects, failures = github_candidates(day, used_urls, get_json=get_github, user_context=user_context)
         buckets["github"] = projects
         audit["exclusions"].extend(failures)
         if any(row["reason"] == "GITHUB_NETWORK_ERROR" for row in failures):
