@@ -59,6 +59,16 @@ independent reviewer. Do not reset the budget or start another run to evade a
 failure. An interrupted local deterministic write can resume once in the same run
 without calling models again; mismatching artifacts remain a failure.
 
+Collection has a separate bound: one initial attempt and at most one explicit
+`prepare --run-id RUN_ID` retry after an I/O failure/timeout, on the same day.
+The claim points to sealed collection state before fetching. Failed attempts
+remain on disk; retrying never creates a new run or resets model/repair budgets.
+Calling prepare without a run ID reports the recorded collection failure rather
+than retrying. Invalid collection data, exhausted attempts or partial model-input
+files are not recollected. Once prepared, normal same-run resume performs no fetch.
+Pre-upgrade failed runs without sealed collection state are not automatically
+migrated; do not remove their claims or infer missing bindings to force a retry.
+
 ## Supply and cost
 
 Daily collection touches only the requested modules: at most four candidates,
@@ -82,6 +92,12 @@ New daily reports retain the selected bounded evidence and reviewed content in
 durable reports, so weekly generation does not depend on scratch survival. Older
 published reports can use their exact hash-verified original run while it exists;
 missing old evidence is reported, not reconstructed from memory or Vault scans.
+Daily dedup and weekly inputs verify the durable prepared/published receipt pair
+and its independent report snapshot, including their recorded publication binding.
+They do not require the current Vault note or its hardlinked backing to stay
+unchanged. Editing or deleting a note does not undo its publication history.
+Live publication/reconciliation still verifies the current file and reports a
+conflict after edits/deletion; it never overwrites or recreates that note.
 Weekly reports never become daily reading history or inputs to later weeklies.
 
 Daily normally uses one Generator and one Reviewer; a weekly uses the same pair
