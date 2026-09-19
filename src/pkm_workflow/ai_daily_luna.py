@@ -162,13 +162,36 @@ def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
     return _prepare_collection(run, state, runtime, vault, collect, context_loader)
 
 
+def _collection_attempts(run):
+    """Missing/corrupt markers must never replenish a recorded attempt budget."""
+    count = 0
+    try:
+        for attempt in (1, 2):
+            marker = run / f"collection-attempt-{attempt}.json"
+            error = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
+            if marker.exists():
+                if count != attempt - 1 or _sealed_read(marker) != {"run_id": run.name, "attempt": attempt}:
+                    raise ValueError("INVALID_ATTEMPT_MARKER")
+                count = attempt
+            if error.exists():
+                failure = _sealed_read(error)
+                if (count != attempt or failure.get("run_id") != run.name
+                        or failure.get("collection_attempt_count") != attempt):
+                    raise ValueError("INVALID_ATTEMPT_FAILURE")
+    except (OSError, ValueError) as error:
+        raise StageError("COLLECTION_ATTEMPT_STATE_INVALID") from error
+    return count
+
+
 def _collection_status(run):
+    attempts = _collection_attempts(run)
     for attempt in (2, 1):
         error = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
         if error.exists():
             failure = _sealed_read(error)
-            if (run / "collection-attempt-2.json").exists():
-                failure |= {"status": "COLLECTION_RETRY_EXHAUSTED", "retryable": False}
+            if attempts == 2:
+                failure |= {"status": "COLLECTION_RETRY_EXHAUSTED", "retryable": False,
+                            "collection_attempt_count": attempts}
             return failure
     return _result("COLLECTION_INTERRUPTED", 4, run_id=run.name)
 
@@ -179,12 +202,13 @@ def _prepare_collection(run, state, runtime, vault, collect, context_loader):
                "collection-attempt-1.json", "collection-attempt-2.json"}
     if any(p.name not in allowed and not p.name.startswith("stage-error-") for p in run.iterdir()):
         raise StageError("COLLECTION_PREPARATION_INCOMPLETE")
+    attempts = _collection_attempts(run)
     first_error = run / "collection-error.json"
     if first_error.exists() and not _sealed_read(first_error)["retryable"]:
         return _collection_status(run)
-    attempt = 2 if (run / "collection-attempt-1.json").exists() else 1
-    if (run / "collection-attempt-2.json").exists():
+    if attempts == 2:
         return _result("COLLECTION_RETRY_EXHAUSTED", 4, run_id=run.name, retryable=False)
+    attempt = attempts + 1
     # Create-new before the call: a crash cannot silently replenish attempts.
     _sealed_write(run / f"collection-attempt-{attempt}.json", {"run_id": run.name, "attempt": attempt})
     day = date.fromisoformat(state["content_date"])

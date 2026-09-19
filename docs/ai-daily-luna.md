@@ -63,6 +63,8 @@ Collection has a separate bound: one initial attempt and at most one explicit
 `prepare --run-id RUN_ID` retry after an I/O failure/timeout, on the same day.
 The claim points to sealed collection state before fetching. Failed attempts
 remain on disk; retrying never creates a new run or resets model/repair budgets.
+Attempt markers and failure records must agree. Missing, damaged or mismatched
+records return COLLECTION_ATTEMPT_STATE_INVALID instead of granting another fetch.
 Calling prepare without a run ID reports the recorded collection failure rather
 than retrying. Invalid collection data, exhausted attempts or partial model-input
 files are not recollected. Once prepared, normal same-run resume performs no fetch.

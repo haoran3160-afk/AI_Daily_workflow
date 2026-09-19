@@ -249,6 +249,30 @@ def test_collection_recovery_does_not_retry_invalid_or_partially_prepared_runs(w
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize("attempts,damage", [(1, "missing"), (2, "missing"), (1, "corrupt")])
+def test_collection_attempt_damage_never_replenishes_budget(workflow, attempts, damage):
+    call, _ = workflow
+    calls = []
+
+    def failed(_day):
+        calls.append(1)
+        raise TimeoutError("temporary outage")
+
+    result = call("prepare", collect=failed)
+    run_id = result["run_id"]
+    for _ in range(attempts - 1):
+        result = call("prepare", run_id=run_id, collect=failed)
+    marker = Path(result["report_path"]).parent / f"collection-attempt-{attempts}.json"
+    if damage == "missing":
+        marker.unlink()
+    else:
+        marker.write_text("{}", encoding="utf-8")
+    for kwargs in ({"run_id": run_id}, {}, {"run_id": run_id}):
+        blocked = call("prepare", collect=failed, **kwargs)
+        assert blocked["status"] == "COLLECTION_ATTEMPT_STATE_INVALID"
+    assert len(calls) == attempts
+
+
 def test_interrupted_review_handoff_resumes_without_rewriting_input(workflow, monkeypatch):
     from pkm_workflow import ai_daily_production as publishing
     call, _ = workflow
