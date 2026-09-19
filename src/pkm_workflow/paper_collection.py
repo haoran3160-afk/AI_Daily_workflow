@@ -30,7 +30,10 @@ ARXIV_ID = re.compile(r"(\d{4}\.\d{4,5})(?:v\d+)?$")
 
 def public_text(url):
     import requests
-    response = requests.get(url, timeout=15, headers={"User-Agent": "Personal-AI-Daily/1.0"})
+    try:
+        response = requests.get(url, timeout=15, headers={"User-Agent": "Personal-AI-Daily/1.0"})
+    except requests.exceptions.SSLError as error:
+        raise ValueError("ARXIV_TLS_ERROR") from error
     if response.status_code == 429 or response.status_code >= 500:
         raise OSError("ARXIV_NETWORK_ERROR")
     if response.status_code != 200:

@@ -286,6 +286,10 @@ def _fetch_article_fulltext(
                 parsed.port or 443,
                 type=socket.SOCK_STREAM,
             )
+        except socket.gaierror as error:
+            if error.errno == socket.EAI_AGAIN:
+                raise requests.ConnectionError("FULLTEXT_DNS_TEMPORARY") from error
+            return False
         except OSError:
             return False
         transparent_proxy_range = ipaddress.ip_network("198.18.0.0/15")
@@ -325,7 +329,9 @@ def _fetch_article_fulltext(
         return extracted
     except Exception as exc:
         status = getattr(getattr(exc, "response", None), "status_code", 0) or 0
-        network_error = isinstance(exc, (requests.Timeout, requests.ConnectionError)) and not isinstance(
+        network_error = isinstance(exc, (
+            requests.Timeout, requests.ConnectionError, requests.exceptions.ChunkedEncodingError,
+        )) and not isinstance(
             exc, requests.exceptions.SSLError
         )
         if raise_transient and (network_error or status == 429 or status >= 500):

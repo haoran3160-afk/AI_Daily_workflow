@@ -94,7 +94,7 @@ def test_nontransient_shortage_does_not_recollect(tmp_path, reason):
     assert len(calls) == 1
 
 
-@pytest.mark.parametrize("failure", ["TIMEOUT", "HTTP_503", "HTTP_404", "SSL"])
+@pytest.mark.parametrize("failure", ["TIMEOUT", "CHUNKED", "HTTP_503", "HTTP_404", "SSL"])
 def test_fulltext_adapter_preserves_only_transient_transport_errors(monkeypatch, failure):
     import requests
 
@@ -104,6 +104,8 @@ def test_fulltext_adapter_preserves_only_transient_transport_errors(monkeypatch,
     def get(*args, **kwargs):
         if failure == "TIMEOUT":
             raise requests.Timeout("temporary outage")
+        if failure == "CHUNKED":
+            raise requests.exceptions.ChunkedEncodingError("incomplete response")
         if failure == "SSL":
             raise requests.exceptions.SSLError("certificate invalid")
         response = requests.Response()
@@ -115,7 +117,7 @@ def test_fulltext_adapter_preserves_only_transient_transport_errors(monkeypatch,
         "metadata_summary_chars": 1000, "fulltext_chars": 12000, "access_probe_chars": 24000,
     }}, {})
     port = default_collection_ports(catalog).fetch_fulltext
-    if failure in {"TIMEOUT", "HTTP_503"}:
+    if failure in {"TIMEOUT", "CHUNKED", "HTTP_503"}:
         with pytest.raises(OSError):
             port("https://8.8.8.8/article")
     else:
@@ -157,3 +159,45 @@ def test_rss_server_failure_is_not_healthy_zero_yield(monkeypatch, status):
         {}, "2026-09-08", raw_only=True, return_meta=True,
     )
     assert observation["reason_code"] == "NETWORK_ERROR"
+
+
+def test_paper_tls_error_does_not_retry(monkeypatch):
+    import requests
+
+    from pkm_workflow.paper_collection import paper_candidates
+
+    def invalid_certificate(*args, **kwargs):
+        raise requests.exceptions.SSLError("certificate invalid")
+    monkeypatch.setattr(requests, "get", invalid_certificate)
+    candidates, audit = paper_candidates(date(2026, 9, 7), set())
+    assert candidates == []
+    assert audit["retryable"] is False
+
+
+def test_fulltext_temporary_dns_error_remains_retryable(monkeypatch):
+    import socket
+
+    from pkm_workflow.v75_collection import default_collection_ports
+
+    def temporary_dns(*args, **kwargs):
+        raise socket.gaierror(socket.EAI_AGAIN, "temporary DNS failure")
+    monkeypatch.setattr(socket, "getaddrinfo", temporary_dns)
+    catalog = SourceCatalog("test", (), {"limits": {
+        "metadata_summary_chars": 1000, "fulltext_chars": 12000, "access_probe_chars": 24000,
+    }}, {})
+    with pytest.raises(OSError):
+        default_collection_ports(catalog).fetch_fulltext("https://example.com/article")
+
+
+@pytest.mark.parametrize("error", [FileNotFoundError, PermissionError])
+def test_missing_or_blocked_github_cli_is_not_a_network_retry(monkeypatch, error):
+    import subprocess
+
+    from pkm_workflow.module_collection import github_candidates
+
+    def unavailable(*args, **kwargs):
+        raise error("local executable unavailable")
+    monkeypatch.setattr(subprocess, "run", unavailable)
+    candidates, failures = github_candidates(date(2026, 9, 9), set())
+    assert candidates == []
+    assert all(row["reason"] != "GITHUB_NETWORK_ERROR" for row in failures)

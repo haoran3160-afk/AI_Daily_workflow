@@ -47,10 +47,13 @@ def github_json(endpoint):
     if not (re.fullmatch(r"repos/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+(?:/readme)?", endpoint)
             or endpoint.startswith("search/repositories?q=")):
         raise ValueError("GITHUB_ENDPOINT_INVALID")
-    process = subprocess.run(
-        ["gh", "api", endpoint], capture_output=True, text=True, encoding="utf-8",
-        timeout=25, check=False,
-    )
+    try:
+        process = subprocess.run(
+            ["gh", "api", endpoint], capture_output=True, text=True, encoding="utf-8",
+            timeout=25, check=False,
+        )
+    except (FileNotFoundError, PermissionError) as error:
+        raise ValueError("GITHUB_CLI_UNAVAILABLE") from error
     if process.returncode:
         if re.search(r"HTTP (?:429|5\d\d)|timed? out|connection|no such host|network", process.stderr, re.I):
             raise OSError("GITHUB_NETWORK_ERROR")
