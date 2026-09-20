@@ -451,6 +451,7 @@ def _check_review(run, state):
 
 def _report(run, state, accepted, decisions, status, code, *, generator=None, reviewer=None):
     evidence = _candidates(state)
+    packet = _read(run / "generator-input.json")["candidates"]
     selected = sorted({evidence[eid].link for story in accepted for claim in story["claims"]
                        for eid in claim["evidence_ids"]})
     markdown_path = None
@@ -507,7 +508,7 @@ def _report(run, state, accepted, decisions, status, code, *, generator=None, re
         "generator_session_id": generator["session_id"] if generator else None,
         "reviewer_session_id": reviewer["session_id"] if reviewer else None,
         "model_identity_source": "CODEX_SESSION_DECLARATION",
-        "evidence_chars": sum(len(row["summary"]) for row in _read(run / "generator-input.json")["candidates"]),
+        "evidence_chars": sum(len(row["summary"]) for row in packet),
         "underfilled": len(accepted) < len(state["sections"]),
         "missing_modules": [key for key in state["sections"] if key not in (
             {candidate.story_type for candidate in evidence.values()}
@@ -519,7 +520,7 @@ def _report(run, state, accepted, decisions, status, code, *, generator=None, re
             "stories": list(accepted),
             "candidates": [asdict(evidence[row["evidence_id"]]) | {"summary": row["summary"],
                            "observed_author": row.get("observed_author")}
-                           for row in _read(run / "generator-input.json")["candidates"]
+                           for row in packet
                            if row["evidence_id"] in selected_ids],
         },
     }
