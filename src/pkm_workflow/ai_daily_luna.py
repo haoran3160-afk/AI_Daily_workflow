@@ -102,36 +102,35 @@ def _result(status: str, exit_code: int = 0, **kwargs: Any) -> dict[str, Any]:
 
 
 def _published_urls(runtime: Path, vault: Path, day: date) -> set[str]:
-    """Only verified published reports count as daily reading history."""
+    """Count daily reading and newly introduced weekly links, never shadow drafts."""
     urls: set[str] = set()
-    receipt_root = runtime / "durable" / "receipts" / "ai-daily"
-    for receipt in sorted(receipt_root.glob("*.published.json")):
-        try:
-            old_day = date.fromisoformat(receipt.name.removesuffix(".published.json"))
-        except ValueError:
-            continue
-        if old_day >= day:
-            continue
-        destination = vault / f"AI-Daily-{old_day}.md"
-        try:
-            report = _read(publishing.load_published_report(runtime, old_day, destination))
-        except (OSError, ValueError):
-            continue
-        urls.update(report.get("audit", {}).get("selected_urls", []))
+    for edition, field in (("daily", "selected_urls"), ("weekly", "supplemented_urls")):
+        receipt_root = runtime / "durable" / "receipts" / f"ai-{edition}"
+        for receipt in sorted(receipt_root.glob("*.published.json")):
+            try:
+                old_day = date.fromisoformat(receipt.name.removesuffix(".published.json"))
+                if old_day >= day:
+                    continue
+                destination = vault / f"AI-{edition.title()}-{old_day}.md"
+                report = _read(publishing.load_published_report(runtime, old_day, destination, edition=edition))
+            except (OSError, ValueError):
+                continue
+            urls.update(report.get("audit", {}).get(field, []))
     return urls
 
 
 def _collect(day: date, runtime: Path, vault: Path, edition="daily") -> CollectionResult:
+    def collect_requested(sections):
+        catalog = load_approved_source_catalog()
+        return collect_modules(
+            day, catalog=catalog, user_context=load_approved_user_context_v75(),
+            used_urls=_published_urls(runtime, vault, day),
+            ports=default_collection_ports(catalog), requested_sections=sections,
+        )
     if edition == "weekly":
         from .weekly_collection import collect_weekly
-        return collect_weekly(day, runtime, vault)
-    catalog = load_approved_source_catalog()
-    return collect_modules(
-        day, catalog=catalog, user_context=load_approved_user_context_v75(),
-        used_urls=_published_urls(runtime, vault, day),
-        ports=default_collection_ports(catalog),
-        requested_sections=sections_for(day, edition),
-    )
+        return collect_weekly(day, runtime, vault, supplement=collect_requested)
+    return collect_requested(sections_for(day, edition))
 
 
 def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
