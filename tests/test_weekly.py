@@ -40,6 +40,26 @@ def test_weekly_without_verified_daily_history_cannot_invent_six_modules(tmp_pat
     assert len(result.audit["missing_modules"]) == 6
 
 
+def test_weekly_uses_nonduplicate_backup_and_rejects_unqualified_supplements(tmp_path):
+    from pkm_workflow.v75_collection import AccessState
+    def supplement(_sections):
+        return CollectionResult(CoverageLevel.A, 2, 2, tuple(Candidate(
+            evidence_id=identifier, source="Approved", title="Project", link=url,
+            published="2026-09-20", summary="Verified public body. " * 100,
+            content_type="project", fulltext_enriched=True, story_type=section,
+            access_state=access,
+        ) for identifier, section, url, access in (
+            ("practice", "ai_practice", "https://example.com/shared/", AccessState.FULL_FREE),
+            ("github-a", "github", "https://example.com/shared/?utm_source=feed", AccessState.FULL_FREE),
+            ("github-b", "github", "https://example.com/backup", AccessState.FULL_FREE),
+            ("paper", "research", "https://example.com/not-a-paper", AccessState.FULL_FREE),
+        )))
+    result = collect_weekly(date(2026, 9, 20), tmp_path, tmp_path, supplement=supplement)
+    assert {c.link for c in result.candidates} == {"https://example.com/shared/", "https://example.com/backup"}
+    assert "research" in result.audit["missing_modules"]
+    assert result.coverage is CoverageLevel.INSUFFICIENT
+
+
 @pytest.mark.parametrize("long_evidence", [False, True])
 def test_six_daily_runs_feed_one_weekly_without_fetching_or_repeating_daily_output(tmp_path, monkeypatch, long_evidence):
     vault = tmp_path / "vault"

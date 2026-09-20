@@ -8,7 +8,7 @@ from datetime import timedelta
 from . import ai_daily_production as publishing
 from .daily_brief import SECTIONS
 from .daily_content import _section_aware_excerpt, _semantic_terms
-from .v75_collection import AccessState, Candidate, CollectionResult, CoverageLevel
+from .v75_collection import AccessState, Candidate, CollectionResult, CoverageLevel, _normalize_url
 
 
 def _material(report_path, runtime):
@@ -110,6 +110,8 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
     missing = [section for section in SECTIONS if not buckets[section]]
     supplemented = []
     supplement_audit = {}
+    used = {_normalize_url(url) for candidate in assembled
+            for url in (candidate.link, *(link for _, link in candidate.source_links))}
     if missing and supplement is not None:
         extra = supplement(tuple(missing))
         supplement_audit = dict(extra.audit)
@@ -122,8 +124,9 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
                      and (section != "research" or candidate.evidence_role == "PAPER_PRIMARY")),
                     key=lambda candidate: (-candidate.editorial_score, candidate.evidence_id),
                 )[:2]
-                if options:
-                    selected = options[0]
+                selected = next((candidate for candidate in options if _normalize_url(candidate.link) not in used), None)
+                if selected is not None:
+                    used.add(_normalize_url(selected.link))
                     assembled.append(replace(selected, source_links=((
                         f"本周新增阅读 · {selected.source} · {selected.published}"
                         + (" · 经典延伸阅读" if selected.content_type == "evergreen" else ""),
