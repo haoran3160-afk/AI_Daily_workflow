@@ -43,7 +43,8 @@ from .v75_collection import (
     default_collection_ports,
 )
 
-MODEL = "gpt-5.6-luna"
+MODEL = "gpt-5.6-sol"
+LEGACY_LUNA_STRATEGY = "sha256:f5c08d9f980e8510e7adee79812892c4c30725087458ca1bcf76b7118aa93e6d"
 CONTRACT = "pkm.ai-daily-luna.v3"
 RUNTIME = Path(r"D:\personal\obsidian_workflow-runtime")
 SHANGHAI = timezone(timedelta(hours=8))
@@ -53,6 +54,7 @@ STRATEGY_HASH = editorial._digest({
     "weekly_provenance": "per_source_author_v1",
     "contract": CONTRACT, "model": MODEL, "reasoning": "medium",
     "generator_prompt": GENERATOR_PROMPT, "reviewer_prompt": REVIEWER_PROMPT,
+    "editorial_guidance": brief.EDITORIAL_GUIDANCE, "weekly_guidance": brief.WEEKLY_GUIDANCE,
     "generator_schema": json.loads(mvp_generator_output_schema()),
     "reviewer_schema": json.loads(mvp_reviewer_output_schema()),
 })
@@ -101,41 +103,35 @@ def _result(status: str, exit_code: int = 0, **kwargs: Any) -> dict[str, Any]:
 
 
 def _published_urls(runtime: Path, vault: Path, day: date) -> set[str]:
-    """Only verified published reports count as daily reading history."""
+    """Count daily reading and newly introduced weekly links, never shadow drafts."""
     urls: set[str] = set()
-    receipt_root = runtime / "durable" / "receipts" / "ai-daily"
-    for receipt in sorted(receipt_root.glob("*.published.json")):
-        try:
-            old_day = date.fromisoformat(receipt.name.removesuffix(".published.json"))
-        except ValueError:
-            continue
-        if old_day >= day:
-            continue
-        prepared_path, published_path = publishing._receipt_paths(runtime, old_day)
-        if not published_path.is_file():
-            continue
-        destination = vault / f"AI-Daily-{old_day}.md"
-        try:
-            prepared = publishing._load_prepared(prepared_path, runtime, old_day, destination)
-            publishing._validate_published(published_path, prepared, prepared_path, destination)
-            report = _read(prepared.shadow_report)
-        except (OSError, ValueError):
-            continue
-        urls.update(report.get("audit", {}).get("selected_urls", []))
+    for edition, field in (("daily", "selected_urls"), ("weekly", "supplemented_urls")):
+        receipt_root = runtime / "durable" / "receipts" / f"ai-{edition}"
+        for receipt in sorted(receipt_root.glob("*.published.json")):
+            try:
+                old_day = date.fromisoformat(receipt.name.removesuffix(".published.json"))
+                if old_day >= day:
+                    continue
+                destination = vault / f"AI-{edition.title()}-{old_day}.md"
+                report = _read(publishing.load_published_report(runtime, old_day, destination, edition=edition))
+            except (OSError, ValueError):
+                continue
+            urls.update(report.get("audit", {}).get(field, []))
     return urls
 
 
 def _collect(day: date, runtime: Path, vault: Path, edition="daily") -> CollectionResult:
+    def collect_requested(sections):
+        catalog = load_approved_source_catalog()
+        return collect_modules(
+            day, catalog=catalog, user_context=load_approved_user_context_v75(),
+            used_urls=_published_urls(runtime, vault, day),
+            ports=default_collection_ports(catalog), requested_sections=sections,
+        )
     if edition == "weekly":
         from .weekly_collection import collect_weekly
-        return collect_weekly(day, runtime, vault)
-    catalog = load_approved_source_catalog()
-    return collect_modules(
-        day, catalog=catalog, user_context=load_approved_user_context_v75(),
-        used_urls=_published_urls(runtime, vault, day),
-        ports=default_collection_ports(catalog),
-        requested_sections=sections_for(day, edition),
-    )
+        return collect_weekly(day, runtime, vault, supplement=collect_requested)
+    return collect_requested(sections_for(day, edition))
 
 
 def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
@@ -145,20 +141,100 @@ def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
         if prior is not None:
             return _result(prior.status, prior.exit_code) | prior.payload()
     claim_path = runtime / "locks" / f"ai-{edition}-{STRATEGY_HASH[-12:]}-{day}.json"
+    legacy_claim = runtime / "locks" / f"ai-{edition}-{LEGACY_LUNA_STRATEGY[-12:]}-{day}.json"
+    if not claim_path.exists() and legacy_claim.exists():
+        prior_run_id = _read(legacy_claim)["run_id"]
+        _load(runtime, prior_run_id, day, legacy=True)
+        return _result("MODEL_MIGRATION_REQUIRED", 4, run_id=prior_run_id)
     if claim_path.exists():
-        return _result("PRODUCTION_BUSY", 4, **_read(claim_path))
+        claim = _read(claim_path)
+        claimed_run = runtime / "scratch" / "runs" / claim["run_id"]
+        if (claimed_run / "collection-state.json").exists() and not (claimed_run / "state.json").exists():
+            claimed_run, _ = _load(runtime, claim["run_id"], day)
+            return _collection_status(claimed_run)
+        return _result("PRODUCTION_BUSY", 4, **claim)
     run_id = uuid4().hex
     run = runtime / "scratch" / "runs" / run_id
     run.mkdir(parents=True)
+    state = {
+        "run_id": run_id, "content_date": str(day), "mode": mode,
+        "edition": edition, "sections": list(requested),
+        "started_at": datetime.now(timezone.utc).isoformat(),
+        "contract": CONTRACT, "strategy_hash": STRATEGY_HASH,
+    }
+    # The claim must always point to recoverable state, even before collection.
+    _sealed_write(run / "collection-state.json", state)
     _write(claim_path, {"run_id": run_id, "content_date": str(day)})
+    return _prepare_collection(run, state, runtime, vault, collect, context_loader)
+
+
+def _collection_attempts(run):
+    """Missing/corrupt markers must never replenish a recorded attempt budget."""
+    count = 0
+    try:
+        for attempt in (1, 2):
+            marker = run / f"collection-attempt-{attempt}.json"
+            error = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
+            if marker.exists():
+                if count != attempt - 1 or _sealed_read(marker) != {"run_id": run.name, "attempt": attempt}:
+                    raise ValueError("INVALID_ATTEMPT_MARKER")
+                count = attempt
+            if error.exists():
+                failure = _sealed_read(error)
+                if (count != attempt or failure.get("run_id") != run.name
+                        or failure.get("collection_attempt_count") != attempt):
+                    raise ValueError("INVALID_ATTEMPT_FAILURE")
+    except (OSError, ValueError) as error:
+        raise StageError("COLLECTION_ATTEMPT_STATE_INVALID") from error
+    return count
+
+
+def _collection_status(run):
+    attempts = _collection_attempts(run)
+    for attempt in (2, 1):
+        error = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
+        if error.exists():
+            failure = _sealed_read(error)
+            if attempts == 2:
+                failure |= {"status": "COLLECTION_RETRY_EXHAUSTED", "retryable": False,
+                            "collection_attempt_count": attempts}
+            return failure
+    return _result("COLLECTION_INTERRUPTED", 4, run_id=run.name)
+
+
+def _prepare_collection(run, state, runtime, vault, collect, context_loader):
+    # Never recollect evidence after any model handoff, repair or partial input.
+    allowed = {"collection-state.json", "collection-error.json", "collection-error-2.json",
+               "collection-attempt-1.json", "collection-attempt-2.json"}
+    if any(p.name not in allowed and not p.name.startswith("stage-error-") for p in run.iterdir()):
+        raise StageError("COLLECTION_PREPARATION_INCOMPLETE")
+    attempts = _collection_attempts(run)
+    first_error = run / "collection-error.json"
+    if first_error.exists() and not _sealed_read(first_error)["retryable"]:
+        return _collection_status(run)
+    if attempts == 2:
+        return _result("COLLECTION_RETRY_EXHAUSTED", 4, run_id=run.name, retryable=False)
+    attempt = attempts + 1
+    # Create-new before the call: a crash cannot silently replenish attempts.
+    _sealed_write(run / f"collection-attempt-{attempt}.json", {"run_id": run.name, "attempt": attempt})
+    day = date.fromisoformat(state["content_date"])
+    edition = state["edition"]
+    requested = state["sections"]
+    collected = None
     try:
         collected = collect(day) if collect else _collect(day, runtime, vault, edition)
-    except (OSError, ValueError, TimeoutError):
+        if collected.audit.get("retryable_collection_failure"):
+            raise OSError("TRANSIENT_SOURCE_FAILURE")
+    except (OSError, ValueError, TimeoutError) as error:
+        error_path = run / ("collection-error.json" if attempt == 1 else "collection-error-2.json")
         failure = _result(
-            "COLLECTION_FAILED", 4, error_code="COLLECTION_FAILED", run_id=run_id,
-            report_path=str(run / "collection-error.json"),
+            "COLLECTION_FAILED" if attempt == 1 else "COLLECTION_RETRY_EXHAUSTED",
+            4, error_code="COLLECTION_FAILED", run_id=run.name,
+            report_path=str(error_path), collection_attempt_count=attempt,
+            retryable=attempt == 1 and isinstance(error, OSError),
+            collection_audit=dict(collected.audit) if collected is not None else {},
         )
-        _write(run / "collection-error.json", failure)
+        _sealed_write(error_path, failure)
         return failure
     context = editorial._validate_user_context(context_loader())
     candidates = editorial._attach_profile_refs(collected.candidates, context)
@@ -169,13 +245,10 @@ def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
                        "period_end": str(day),
                        "published_days": collected.audit.get("published_days", [])}
     _write(run / "generator-input.json", generator_input)
-    publishing._write_new(run / "generator-instructions.txt", GENERATOR_PROMPT.encode("utf-8"))
+    instructions = brief.generator_instructions(requested, edition)
+    publishing._write_new(run / "generator-instructions.txt", instructions.encode("utf-8"))
     publishing._write_new(run / "generator-schema.json", brief.role_envelope_schema("generator"))
-    state = {
-        "run_id": run_id, "content_date": str(day), "mode": mode,
-        "edition": edition, "sections": list(requested),
-        "started_at": datetime.now(timezone.utc).isoformat(),
-        "contract": CONTRACT, "strategy_hash": STRATEGY_HASH,
+    state = state | {
         "coverage": collected.coverage.value, "evidence_level": collected.evidence_level.value,
         "evidence_healthy_sources": collected.evidence_healthy_sources,
         "candidates": [asdict(candidate) for candidate in candidates],
@@ -198,50 +271,105 @@ def _prepare(runtime, vault, day, mode, collect, context_loader, edition):
 def _generator_ready(run, state):
     return _result(
         "GENERATOR_READY", run_id=state["run_id"], content_date=state["content_date"],
+        required_model=MODEL, required_reasoning="medium",
         generator_input_path=str(run / "generator-input.json"),
-        instructions_path=str(run / "generator-instructions.txt"),
-        schema_path=str(run / "generator-schema.json"),
+        instructions_path=str(run / ("generator-instructions-sol.txt" if state.get("model_migration") else "generator-instructions.txt")),
+        schema_path=str(run / ("generator-schema-sol.json" if state.get("model_migration") else "generator-schema.json")),
         draft_path=str(_output_path(run, "generator")),
         candidate_count=len(state["candidates"]),
         edition=state["edition"], requested_sections=state["sections"],
     )
 
 
-def _load(runtime: Path, run_id: str, day: date):
+def _load(runtime: Path, run_id: str, day: date, *, legacy=False):
     if not re.fullmatch(r"[0-9a-f]{32}", run_id):
         raise StageError("RUN_ID_INVALID")
     run = runtime / "scratch" / "runs" / run_id
     if not run.resolve(strict=True).is_relative_to(runtime.resolve(strict=True)):
         raise StageError("RUNTIME_PATH_ESCAPE")
-    state = _sealed_read(run / "state.json")
+    ready = (run / "state.json").exists()
+    migrated = not legacy and (run / "state-sol.json").exists()
+    state = _sealed_read(run / ("state-sol.json" if migrated else "state.json" if ready else "collection-state.json"))
+    strategy = LEGACY_LUNA_STRATEGY if legacy else STRATEGY_HASH
+    if migrated:
+        original = _sealed_read(run / "state.json")
+        if original["strategy_hash"] != LEGACY_LUNA_STRATEGY or state != _sol_state(run, original):
+            raise StageError("MODEL_MIGRATION_BINDING_MISMATCH")
+        old_claim = _read(runtime / "locks" / f"ai-{state['edition']}-{LEGACY_LUNA_STRATEGY[-12:]}-{day}.json")
+        if old_claim["run_id"] != run_id:
+            raise StageError("RUN_OWNERSHIP_MISMATCH")
+        for file, key in (("generator-input.json", "generator_input_hash"),
+                          ("generator-instructions.txt", "instructions_hash"), ("generator-schema.json", "schema_hash")):
+            if _file_hash(run / file) != original[key]:
+                raise StageError("INPUT_CHANGED")
     if state["run_id"] != run_id or state["contract"] != CONTRACT:
         raise StageError("RUN_BINDING_MISMATCH")
     if state["content_date"] != day.isoformat():
         raise StageError("RUN_DATE_EXPIRED")
-    if state["strategy_hash"] != STRATEGY_HASH:
+    if state["strategy_hash"] != strategy:
         raise StageError("STRATEGY_CHANGED")
     for file, key in (
         ("generator-input.json", "generator_input_hash"),
-        ("generator-instructions.txt", "instructions_hash"),
-        ("generator-schema.json", "schema_hash"),
+        ("generator-instructions-sol.txt" if migrated else "generator-instructions.txt", "instructions_hash"),
+        ("generator-schema-sol.json" if migrated else "generator-schema.json", "schema_hash"),
     ):
-        if _file_hash(run / file) != state[key]:
+        if ready and _file_hash(run / file) != state[key]:
             raise StageError("INPUT_CHANGED")
-    claim = _read(runtime / "locks" / f"ai-{state['edition']}-{STRATEGY_HASH[-12:]}-{day}.json")
+    claim = _read(runtime / "locks" / f"ai-{state['edition']}-{strategy[-12:]}-{day}.json")
     if claim["run_id"] != run_id:
         raise StageError("RUN_OWNERSHIP_MISMATCH")
     return run, state
 
 
-def _role_output(path: Path, role: str):
+def _sol_state(run, original):
+    return original | {
+        "strategy_hash": STRATEGY_HASH,
+        "instructions_hash": _file_hash(run / "generator-instructions-sol.txt"),
+        "schema_hash": _file_hash(run / "generator-schema-sol.json"),
+        "source_state_sha256": _file_hash(run / "state.json"),
+        "model_migration": {"from": "gpt-5.6-luna", "to": MODEL, "reason": "USER_APPROVED_MODEL_MIGRATION"},
+    }
+
+
+def _migrate_model(runtime, run_id, day):
+    run, original = _load(runtime, run_id, day, legacy=True)
+    if (run / "state-sol.json").exists():
+        _load(runtime, run_id, day)
+        return _result("MODEL_MIGRATION_ALREADY_APPLIED", run_id=run_id)
+    allowed = {"state.json", "collection-state.json", "collection-attempt-1.json",
+               "collection-attempt-2.json", "collection-error.json", "collection-error-2.json",
+               "generator-input.json", "generator-instructions.txt", "generator-schema.json",
+               "generator-instructions-sol.txt", "generator-schema-sol.json"}
+    if not (run / "state.json").exists() or any(
+        path.name not in allowed and not path.name.startswith("stage-error-") for path in run.iterdir()
+    ):
+        raise StageError("MODEL_MIGRATION_ALREADY_STARTED")
+    if (original["coverage"] == "INSUFFICIENT" or original["evidence_level"] == "INSUFFICIENT"
+            or set(original["sections"]) - {c["story_type"] for c in original["candidates"]}):
+        raise StageError("MODEL_MIGRATION_INCOMPLETE")
+    new_claim = runtime / "locks" / f"ai-{original['edition']}-{STRATEGY_HASH[-12:]}-{day}.json"
+    if new_claim.exists() and _read(new_claim).get("run_id") != run_id:
+        raise StageError("MODEL_MIGRATION_DATE_BUSY")
+    publishing._write_or_verify(
+        run / "generator-instructions-sol.txt",
+        brief.generator_instructions(original["sections"], original["edition"]).encode("utf-8"),
+    )
+    publishing._write_or_verify(run / "generator-schema-sol.json", brief.role_envelope_schema("generator"))
+    publishing._write_or_verify(new_claim, editorial._canonical({"run_id": run_id, "content_date": str(day)}) + b"\n")
+    _sealed_write(run / "state-sol.json", _sol_state(run, original))
+    run, state = _load(runtime, run_id, day)
+    return _generator_ready(run, state)
+
+
+def _role_output(path: Path, role: str, *, expected_model=None):
     envelope = _read(path)
     expected = {"model", "session_id", "draft"} if role == "generator" else {
         "model", "session_id", "review_request_hash", "decisions",
     }
     if set(envelope) != expected:
         raise StageError("ROLE_ENVELOPE_INVALID", repairable=role == "generator" and set(envelope) == {"stories"})
-    if envelope["model"] != MODEL:
-        raise StageError("LUNA_MODEL_REQUIRED")
+    if envelope["model"] != (expected_model or MODEL):
+        raise StageError("CONFIGURED_MODEL_REQUIRED")
     if not isinstance(envelope["session_id"], str) or not re.fullmatch(
         r"(?:[0-9a-fA-F-]{36}|/root/[a-z0-9_/]+)", envelope["session_id"]
     ):
@@ -332,6 +460,7 @@ def _review(run, state):
 def _reviewer_ready(run, state, frozen):
     return _result(
         "REVIEWER_READY", run_id=state["run_id"],
+        required_model=MODEL, required_reasoning="medium",
         review_input_path=str(_review_file(run, "review-input")),
         instructions_path=str(_review_file(run, "reviewer-instructions", ".txt")),
         schema_path=str(_review_file(run, "reviewer-schema")),
@@ -341,14 +470,16 @@ def _reviewer_ready(run, state, frozen):
     )
 
 
-def _check_review(run, state):
+def _check_review(run, state, *, archived_model=None):
     frozen = _sealed_read(_review_file(run, "review-state"))
     if (
         _file_hash(run / frozen["draft_filename"]) != frozen["draft_file_hash"]
         or _file_hash(_review_file(run, "review-input")) != frozen["review_input_hash"]
     ):
         raise StageError("DRAFT_OR_REVIEW_INPUT_CHANGED")
-    envelope, structured = _role_output(_output_path(run, "reviewer"), "reviewer")
+    if archived_model is not None and archived_model not in {"gpt-5.6-luna", MODEL}:
+        raise StageError("HISTORICAL_MODEL_INVALID")
+    envelope, structured = _role_output(_output_path(run, "reviewer"), "reviewer", expected_model=archived_model)
     if envelope["session_id"] == frozen["generator_session_id"]:
         raise StageError("INDEPENDENT_REVIEWER_REQUIRED")
     if _review_file(run, "review") != run / "review.json" and (run / "review.json").exists():
@@ -383,6 +514,7 @@ def _check_review(run, state):
 
 def _report(run, state, accepted, decisions, status, code, *, generator=None, reviewer=None):
     evidence = _candidates(state)
+    packet = _read(run / "generator-input.json")["candidates"]
     selected = sorted({evidence[eid].link for story in accepted for claim in story["claims"]
                        for eid in claim["evidence_ids"]})
     markdown_path = None
@@ -437,9 +569,10 @@ def _report(run, state, accepted, decisions, status, code, *, generator=None, re
         + (2 if repair.exists() and _read(repair).get("error_code") == "EDITORIAL_REVISION_REQUIRED" else int(repair.exists())),
         "repair_count": int(repair.exists()),
         "generator_session_id": generator["session_id"] if generator else None,
+        "model_migration": state.get("model_migration"),
         "reviewer_session_id": reviewer["session_id"] if reviewer else None,
         "model_identity_source": "CODEX_SESSION_DECLARATION",
-        "evidence_chars": sum(len(row["summary"]) for row in _read(run / "generator-input.json")["candidates"]),
+        "evidence_chars": sum(len(row["summary"]) for row in packet),
         "underfilled": len(accepted) < len(state["sections"]),
         "missing_modules": [key for key in state["sections"] if key not in (
             {candidate.story_type for candidate in evidence.values()}
@@ -451,7 +584,7 @@ def _report(run, state, accepted, decisions, status, code, *, generator=None, re
             "stories": list(accepted),
             "candidates": [asdict(evidence[row["evidence_id"]]) | {"summary": row["summary"],
                            "observed_author": row.get("observed_author")}
-                           for row in _read(run / "generator-input.json")["candidates"]
+                           for row in packet
                            if row["evidence_id"] in selected_ids],
         },
     }
@@ -565,7 +698,7 @@ def run_luna_stage(
     try:
         runtime = runtime_root.resolve(strict=True)
         vault = vault_daily_dir.resolve(strict=True)
-        if mode not in {"shadow", "production"} or stage not in {"prepare", "review", "finalize"}:
+        if mode not in {"shadow", "production"} or stage not in {"prepare", "review", "finalize", "migrate-model"}:
             raise StageError("STAGE_OR_MODE_INVALID")
         if stage == "finalize" and mode == "production" and not confirm_vault_write:
             raise StageError("CONFIRM_VAULT_WRITE_REQUIRED")
@@ -582,6 +715,8 @@ def run_luna_stage(
             return _prepare(runtime, vault, day, mode, collect, context_loader, selected_edition)
         if not run_id:
             raise StageError("RUN_ID_REQUIRED")
+        if stage == "migrate-model":
+            return _migrate_model(runtime, run_id, day)
         run, state = _load(runtime, run_id, day)
         if edition is not None and edition != state["edition"]:
             raise StageError("EDITION_MISMATCH")
@@ -589,6 +724,10 @@ def run_luna_stage(
             raise StageError("WEEKLY_NOT_DUE")
         if mode == "production" and state["edition"] == "daily" and day.weekday() == 6:
             raise StageError("DAILY_NOT_DUE")
+        if not (run / "state.json").exists():
+            if stage != "prepare":
+                return _result("COLLECTION_NOT_READY", 4, run_id=run_id)
+            return _prepare_collection(run, state, runtime, vault, collect, context_loader)
         if stage == "prepare":
             if (run / "run-report.json").exists():
                 return _finalize(run, state, "shadow", False, runtime, vault)

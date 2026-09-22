@@ -1,7 +1,7 @@
 # AI Daily Workflow
 
 Read README.md and the workflow runbook before changing behavior.
-Keep source collection, independent Luna review and deterministic publication.
+Keep source collection, independent Sol review and deterministic publication.
 No DeepSeek/OpenAI API/Codex CLI fallback. Do not read or commit .env, private
 configuration, Obsidian notes, runtime artifacts or user history.
 

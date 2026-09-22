@@ -1,7 +1,7 @@
 # Personal AI Daily / Weekly — operating contract
 
 Use the existing private Codex project and its local engine deployment. Content
-generation and independent fresh-context review use gpt-5.6-luna / medium only.
+generation and independent fresh-context review use gpt-5.6-sol / medium only.
 No DeepSeek/OpenAI API, Codex CLI, provider fallback or automatic recharge.
 
 ## Reading cadence
@@ -26,7 +26,24 @@ icons, personal priority (not a science score), and dated GitHub stars/self-use 
 
 ## One scheduler, three stages
 
-The existing local automation starts at 08:00 Shanghai. Successful publication
+The scheduler coordinates; it does not author either role output. Before fetching,
+explicitly request gpt-5.6-sol/medium fresh-context Generator and Reviewer agents.
+Their initial readiness checks must not read evidence or write outputs. Use the
+host-returned identities and explicit accepted model request, not a self-guessed
+model name. If delegation is unavailable, stop before collection and report the
+actual tool error. Feed evidence to the Generator only after prepare, and feed
+only the sealed review packet to the already independent Reviewer after review.
+
+An operator-approved migrate-model stage can migrate a same-day, prepared-only
+Luna run from the pinned pre-Sol strategy. It preserves the original state/input,
+appends Sol instructions/schema/state, and keeps both claims bound to the same
+run. Started drafts/reviews/reports, unknown strategies and inadequate evidence
+are rejected. Never use migration as a retry or repair-budget reset.
+The legacy module/contract names remain compatibility identifiers, not model claims.
+
+The existing local automation starts at 08:00 Shanghai when the host is online.
+If missed, open Codex and click Run now on the same task once; this is not an
+app-start trigger and does not use hourly polling. Successful publication
 happens after processing, not necessarily at 08:00. The host and Codex app must be
 available. Do not add another scheduler or Windows Task.
 
@@ -47,7 +64,7 @@ separate, using the same publisher and lock; a weekly never replaces a daily.
 
 On GENERATOR_READY read only returned input/instructions/schema. Write the draft
 with the real role identity, not a model name. On REVIEWER_READY delegate exactly
-one fresh-context Luna Reviewer; explicitly provide its real tool-returned agent
+one fresh-context Sol Reviewer; explicitly provide its real tool-returned agent
 identity. It reads only the specified review packet and writes its own decisions.
 Never author or rewrite another role's review. Python owns URLs, rendering and
 publication. Only vault_write=true means newly written; ALREADY_EXISTS skips with
@@ -59,6 +76,26 @@ independent reviewer. Do not reset the budget or start another run to evade a
 failure. An interrupted local deterministic write can resume once in the same run
 without calling models again; mismatching artifacts remain a failure.
 
+Collection has a separate bound: one initial attempt and at most one explicit
+`prepare --run-id RUN_ID` retry after an I/O failure/timeout, on the same day.
+This includes transient source failures reported by collection, not just exceptions
+escaping the collector. Healthy zero yield, invalid data and unavailable/paid bodies
+are not retryable. A temporary source failure matters only when coverage or a
+requested module is missing; a successful evidence packet is never recollected.
+When prepare returns COLLECTION_FAILED with retryable=true, the scheduled runner
+must call prepare once with that run ID before generating. Never retry a terminal
+shortage, reset the date claim, or start another run. This recovery happens before
+model handoff and does not consume or reset the shared editorial repair opportunity.
+The claim points to sealed collection state before fetching. Failed attempts
+remain on disk; retrying never creates a new run or resets model/repair budgets.
+Attempt markers and failure records must agree. Missing, damaged or mismatched
+records return COLLECTION_ATTEMPT_STATE_INVALID instead of granting another fetch.
+Calling prepare without a run ID reports the recorded collection failure rather
+than retrying. Invalid collection data, exhausted attempts or partial model-input
+files are not recollected. Once prepared, normal same-run resume performs no fetch.
+Pre-upgrade failed runs without sealed collection state are not automatically
+migrated; do not remove their claims or infer missing bindings to force a retry.
+
 ## Supply and cost
 
 Daily collection touches only the requested modules: at most four candidates,
@@ -66,23 +103,45 @@ Daily collection touches only the requested modules: at most four candidates,
 those modules, not untouched sources elsewhere in the catalog. Both modules must
 have free verified evidence; missing supply is an explicit failure, not filler.
 Preserve the approved source windows and dated unread-classic fallback.
-Weekly-cadence RSS sources are checked on their module's first reading day
-(Mon/Tue/Wed), so they are not stranded on the no-fetch Sunday summary.
+GitHub selection ranks at most six unread repository metadata records by approved
+project/prior-knowledge and interest terms before fetching README evidence. Stars
+and date rotation do not determine relevance; only two verified candidates reach
+the model. A metadata match is a selection hint, not proof of personal usefulness.
+Generator instructions contain common evidence rules plus only the requested
+modules' editorial guidance; research requirements do not leak into cognition.
+Weekly-cadence RSS sources are checked whenever their module is scheduled
+(both paired reading days). There is no cross-day candidate cache; checking only
+the first day would leave the second day's module empty.
 
-Weekly uses only verified daily publications from Monday through the run date,
-including their sealed evidence snapshots; it does not run another broad fetch.
+Weekly first uses verified daily publications from Monday through the run date,
+including their sealed evidence snapshots. Only missing sections are collected
+from approved sources, with at most two candidates per missing section and one
+selected original per section. Do not recollect sections already covered.
 Each module receives a bounded source-labelled bundle (at most three distinct
 originals, normally two), then all six bundles enter one Generator/Reviewer cycle
 within 24,000 characters. Every source retains its own date and original link.
+Within each source, reuse section-aware excerpt selection rather than taking the
+first characters. Preserve source labels and prioritize mechanisms and limits;
+past editorial judgments help select passages but never become primary facts.
 Prior editorial judgments are marked as interpretations, not new source facts.
 Only one source is enough for a single-case recap, never a claimed cross-day trend.
-If one of the six modules lacks trustworthy material, do not manufacture a weekly.
+Label supplements as 本周新增阅读 and classics as extended reading, retaining the
+original date. Only verified free bodies qualify. New weekly links become reading
+history for later dailies; recap links are not new recommendations.
+If one of the six modules still lacks trustworthy material, do not manufacture a weekly.
 
 New daily reports retain the selected bounded evidence and reviewed content in
 durable reports, so weekly generation does not depend on scratch survival. Older
 published reports can use their exact hash-verified original run while it exists;
 missing old evidence is reported, not reconstructed from memory or Vault scans.
-Weekly reports never become daily reading history or inputs to later weeklies.
+Daily dedup and weekly inputs verify the durable prepared/published receipt pair
+and its independent report snapshot, including their recorded publication binding.
+They do not require the current Vault note or its hardlinked backing to stay
+unchanged. Editing or deleting a note does not undo its publication history.
+Live publication/reconciliation still verifies the current file and reports a
+conflict after edits/deletion; it never overwrites or recreates that note.
+Only newly introduced weekly URLs join daily deduplication. Weekly reports do
+not become inputs to later weeklies.
 
 Daily normally uses one Generator and one Reviewer; a weekly uses the same pair
 once for all six modules. Platform token usage unavailable means unknown, not free.
