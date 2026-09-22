@@ -49,8 +49,8 @@ Codex 负责内容生成与独立审核，Python 负责抓取、去重、校验�
 ```mermaid
 flowchart LR
     A[Codex 定时任务] --> B[Python 准备候选与证据]
-    B --> C[Luna 生成简报]
-    C --> D[新上下文 Luna 独立审核]
+    B --> C[Sol 生成简报]
+    C --> D[新上下文 Sol 独立审核]
     D --> E[Python 校验与渲染]
     E --> F[写入 Obsidian Markdown]
 ```
@@ -58,7 +58,7 @@ flowchart LR
 日报准备新候选；周报优先使用已验证的日报材料，必要时定向补缺。两者复用同一条生成、审核和发布链路。
 
 **模型工作在 Codex 会话中完成。** 单独执行 Python 命令只会推进准备、校验或发布阶段，不会自行调用模型。
-当前部署使用 `gpt-5.6-luna / medium`，不通过 DeepSeek API、另购 OpenAI API 或嵌套 Codex CLI 生成内容。
+当前部署使用 `gpt-5.6-sol / medium`，不通过 DeepSeek API、另购 OpenAI API 或嵌套 Codex CLI 生成内容。
 
 ## 开始使用
 
