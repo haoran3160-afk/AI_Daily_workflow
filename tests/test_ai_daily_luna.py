@@ -31,9 +31,10 @@ def workflow(tmp_path):
     ) for section in DAILY_SECTIONS)
     context = {"fields": {"projects": ["Agent research"]}, "user_context_hash": "sha256:" + "a" * 64}
     def call(stage, **kwargs):
+        collector = kwargs.pop("collect", lambda _day: CollectionResult(CoverageLevel.A, 14, 14, candidates))
         return run_luna_stage(
             stage, runtime_root=tmp_path, vault_daily_dir=vault, today=DAY,
-            collect=lambda _day: CollectionResult(CoverageLevel.A, 14, 14, candidates),
+            collect=collector,
             context_loader=lambda: context, **kwargs,
         )
     return call, vault
@@ -108,11 +109,376 @@ def test_unread_classics_exclude_verified_history_older_than_thirty_days(workflo
     }
 
 
+def test_partial_week_supplements_only_missing_sections_and_remembers_new_links(workflow, tmp_path):
+    from pkm_workflow.ai_daily_luna import _published_urls
+    from pkm_workflow.weekly_collection import collect_weekly
+    call, vault = workflow
+    daily, _, _ = ready(workflow)
+    assert call("finalize", mode="production", run_id=daily["run_id"], confirm_vault_write=True)["vault_write"]
+    requested = []
+    def supplement(sections):
+        requested.append(sections)
+        return CollectionResult(CoverageLevel.A, 4, 4, tuple(Candidate(
+            evidence_id=section, source="Approved source", title="New reading",
+            link=f"https://example.com/new/{section}", published=str(DAY),
+            summary="Original product methodology and limitations. " * 100,
+            content_type="evergreen", fulltext_enriched=True, story_type=section,
+        ) for section in sections))
+    sunday = DAY + timedelta(days=6)
+    collection = collect_weekly(sunday, tmp_path, vault, supplement=supplement)
+    assert requested == [("builder", "vc", "cognition", "github")]
+    assert len(collection.candidates) == 6
+    def stage(name, **kwargs):
+        return run_luna_stage(name, today=sunday, runtime_root=tmp_path, vault_daily_dir=vault,
+                              collect=lambda _: collection,
+                              context_loader=lambda: {"fields": {"projects": ["Agent research"]},
+                                                      "user_context_hash": "sha256:" + "a" * 64}, **kwargs)
+    prepared = stage("prepare", mode="production")
+    packet = json.loads(Path(prepared["generator_input_path"]).read_text(encoding="utf-8"))
+    assert sum(len(row["summary"]) for row in packet["candidates"]) <= 24000
+    builder = next(candidate for candidate in packet["candidates"] if candidate["story_type"] == "builder")
+    evidence_id = builder["evidence_id"]
+    def statement(text):
+        return {"text": text, "evidence_ids": [evidence_id]}
+    signal = {
+        "kind": "CASE",
+        "title": statement("Builder 的新阅读"),
+        "body": [statement("原文介绍了产品方法与限制。")],
+        "takeaway": statement("这是一条值得核验的单个案例。"),
+        "connection": statement("可以用该案例检查 Agent 研究中的产品取舍。")
+        | {"context_refs": ["projects[0]"]},
+        "watch": None,
+    }
+    save(prepared["draft_path"], {
+        "model": MODEL, "session_id": GENERATOR_ID,
+        "draft": {"lead": None, "signals": [signal]},
+    })
+    review = stage("review", run_id=prepared["run_id"])
+    rubric = json.loads(Path(review["review_input_path"]).read_text(encoding="utf-8"))["rubric"]
+    save(review["review_path"], {"model": MODEL, "session_id": REVIEWER_ID,
+        "review_request_hash": review["review_request_hash"], "decisions": [
+            {**{key: row[key] for key in ("claim_id", "evidence_ids", "review_requirement_hash")},
+             "decision": "ACCEPT", "reason_code": "SUPPORTED_BY_SEALED_EVIDENCE"}
+            for row in rubric["requirements"]]})
+    final = stage("finalize", mode="production", run_id=prepared["run_id"], confirm_vault_write=True)
+    assert final["vault_write"] is True
+    assert "本周新增阅读" in Path(final["vault_path"]).read_text(encoding="utf-8")
+    assert stage("prepare", mode="production")["status"] == "ALREADY_EXISTS"
+    used = _published_urls(tmp_path, vault, sunday + timedelta(days=1))
+    assert "https://example.com/new/builder" in used
+    assert "https://example.com/new/github" not in used
+
+
 def test_duplicate_prepare_is_busy(workflow):
     call, _ = workflow
     first = call("prepare")
     assert call("prepare")["status"] == "PRODUCTION_BUSY"
     assert call("prepare", run_id=first["run_id"])["run_id"] == first["run_id"]
+
+
+def test_current_roles_require_luna6_max(workflow):
+    from pkm_workflow import daily_brief
+    call, _ = workflow
+    prepared, reviewed, _ = ready(workflow)
+    for result in (prepared, reviewed):
+        assert result["required_model"] == "gpt-6-luna"
+        assert result["required_reasoning"] == "max"
+        schema = json.loads(Path(result["schema_path"]).read_text(encoding="utf-8"))
+        assert schema["properties"]["model"]["enum"] == ["gpt-6-luna"]
+    assert "gpt-6-luna" in daily_brief.GENERATOR_PROMPT
+    assert "gpt-6-luna" in daily_brief.REVIEWER_PROMPT
+    report = call("finalize", run_id=prepared["run_id"])
+    assert report["model"] == "gpt-6-luna"
+    assert report["reasoning"] == "max"
+
+
+def test_model_upgrade_never_bypasses_an_existing_date_claim(workflow, monkeypatch):
+    from pkm_workflow import ai_daily_luna as engine
+    call, _ = workflow
+    with monkeypatch.context() as old:
+        old.setattr(engine, "STRATEGY_HASH", "sha256:" + "9" * 64)
+        prepared = call("prepare")
+    def forbidden_collection(_):
+        pytest.fail("Changing model must not create a second run or collect again")
+    blocked = call("prepare", collect=forbidden_collection)
+    assert blocked["status"] == "STRATEGY_CHANGED"
+    assert blocked["run_id"] == prepared["run_id"]
+    assert blocked["vault_write"] is False
+
+
+def test_model_migration_preserves_prepared_evidence_and_rejects_started_roles(workflow, monkeypatch):
+    from pkm_workflow import ai_daily_luna as engine
+    call, _ = workflow
+    with monkeypatch.context() as legacy:
+        legacy.setattr(engine, "STRATEGY_HASH", "sha256:f5c08d9f980e8510e7adee79812892c4c30725087458ca1bcf76b7118aa93e6d")
+        prepared = call("prepare")
+    root = Path(prepared["draft_path"]).parent
+    original = {name: (root / name).read_bytes() for name in (
+        "state.json", "generator-input.json", "generator-instructions.txt", "generator-schema.json")}
+    blocked = call("prepare")
+    assert blocked["status"] == "MODEL_MIGRATION_REQUIRED"
+    assert blocked["run_id"] == prepared["run_id"]
+    (root / "draft.json").write_text("{}", encoding="utf-8")
+    assert call("migrate-model", run_id=prepared["run_id"])["status"] == "MODEL_MIGRATION_ALREADY_STARTED"
+    (root / "draft.json").unlink()
+    migrated = call("migrate-model", run_id=prepared["run_id"])
+    assert migrated["status"] == "GENERATOR_READY"
+    assert migrated["run_id"] == prepared["run_id"]
+    assert Path(migrated["generator_input_path"]).read_bytes() == original["generator-input.json"]
+    assert all((root / name).read_bytes() == content for name, content in original.items())
+    assert MODEL in Path(migrated["schema_path"]).read_text(encoding="utf-8")
+    assert call("prepare")["status"] == "PRODUCTION_BUSY"
+    assert call("prepare", run_id=prepared["run_id"])["instructions_path"] == migrated["instructions_path"]
+    assert call("migrate-model", run_id=prepared["run_id"])["status"] == "MODEL_MIGRATION_ALREADY_APPLIED"
+    def resumed(stage, **kwargs):
+        if stage == "prepare":
+            kwargs["run_id"] = prepared["run_id"]
+        return call(stage, **kwargs)
+    ready((resumed, workflow[1]))
+    final = call("finalize", mode="production", run_id=prepared["run_id"], confirm_vault_write=True)
+    assert final["vault_write"] is True
+    assert final["model"] == MODEL
+    assert final["role_execution_count"] == 2
+    assert final["repair_count"] == 0
+
+
+@pytest.mark.parametrize("damage", ["original_state", "original_input", "new_instructions"])
+def test_model_migration_still_binds_original_and_new_artifacts(workflow, monkeypatch, damage):
+    from pkm_workflow import ai_daily_luna as engine
+    call, _ = workflow
+    with monkeypatch.context() as legacy:
+        legacy.setattr(engine, "STRATEGY_HASH", engine.LEGACY_LUNA_STRATEGY)
+        prepared = call("prepare")
+    assert call("migrate-model", run_id=prepared["run_id"])["status"] == "GENERATOR_READY"
+    root = Path(prepared["draft_path"]).parent
+    path = root / {"original_state": "state.json", "original_input": "generator-input.json",
+                   "new_instructions": "generator-instructions-sol.txt"}[damage]
+    path.write_bytes(path.read_bytes() + b"\nchanged")
+    result = call("prepare", run_id=prepared["run_id"])
+    assert result["exit_code"] == 4
+    assert result["vault_write"] is False
+    assert not list(workflow[1].glob("*.md"))
+
+
+@pytest.mark.parametrize("archived_model", ["gpt-5.6-luna", "gpt-5.6-sol"])
+def test_archived_review_does_not_weaken_live_model_validation(workflow, tmp_path, archived_model):
+    from pkm_workflow import ai_daily_luna as engine
+    from pkm_workflow.weekly_collection import _material
+    call, _ = workflow
+    prepared, reviewed, response = ready(workflow)
+    response["model"] = archived_model
+    save(reviewed["review_path"], response)
+    rejected = call("finalize", run_id=prepared["run_id"])
+    assert rejected["status"] == "CONFIGURED_MODEL_REQUIRED"
+    root = Path(prepared["draft_path"]).parent
+    # A legacy report has no embedded reviewed_material; its review model is
+    # taken from the sealed historical report, not the current execution policy.
+    engine._sealed_write(root / "run-report.json", {"model": archived_model})
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    report = archive / (prepared["run_id"] + ".json")
+    report.write_bytes((root / "run-report.json").read_bytes())
+    material = _material(report, tmp_path)
+    assert len(material["stories"]) == 2
+    assert material["weekly_candidates"] == material["candidates"]
+
+
+def test_legacy_report_without_candidate_snapshot_excludes_unpublished_choices(workflow, tmp_path):
+    from pkm_workflow import ai_daily_luna as engine
+    from pkm_workflow.weekly_collection import _material
+
+    call, vault = workflow
+    candidates = tuple(Candidate(
+        evidence_id=f"evidence-{section}", source="Research Lab",
+        title=f"{section} item", link=f"https://example.com/{section}",
+        published=str(DAY), summary="Verified original source body. " * 20,
+        content_type="research", fulltext_enriched=True, story_type=section,
+        evidence_role="PAPER_PRIMARY" if section == "research" else "PRIMARY_OR_EXPERT",
+    ) for section in DAILY_SECTIONS) + (Candidate(
+        evidence_id="unread", source="Another Lab", title="Unpublished candidate",
+        link="https://example.com/unread", published=str(DAY),
+        summary="Verified original body for another research candidate. " * 20,
+        content_type="research", fulltext_enriched=True, story_type="research",
+        evidence_role="PAPER_PRIMARY",
+    ),)
+    prepared = call("prepare", collect=lambda _day: CollectionResult(
+        CoverageLevel.A, 14, 14, candidates,
+    ))
+    def resumed(stage, **kwargs):
+        if stage == "prepare":
+            kwargs["run_id"] = prepared["run_id"]
+        return call(stage, **kwargs)
+    ready((resumed, vault))
+    root = Path(prepared["draft_path"]).parent
+    engine._sealed_write(root / "run-report.json", {"model": MODEL})
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    report = archive / f"{prepared['run_id']}.json"
+    report.write_bytes((root / "run-report.json").read_bytes())
+    material = _material(report, tmp_path)
+    assert {row["link"] for row in material["weekly_candidates"]} == {
+        f"https://example.com/{section}" for section in DAILY_SECTIONS
+    }
+    assert "https://example.com/unread" not in {
+        row["link"] for row in material["weekly_candidates"]
+    }
+
+
+@pytest.mark.parametrize("save_mode", ["inplace", "replace", "delete"])
+def test_published_history_survives_note_edits(workflow, tmp_path, save_mode):
+    from pkm_workflow.ai_daily_luna import _published_urls
+    from pkm_workflow.weekly_collection import collect_weekly
+
+    call, vault = workflow
+    prepared, _, _ = ready(workflow)
+    result = call("finalize", mode="production", run_id=prepared["run_id"], confirm_vault_write=True)
+    assert result["vault_write"]
+    note = Path(result["vault_path"])
+    annotated = note.read_text(encoding="utf-8") + "\nMy private annotation\n"
+    if save_mode == "inplace":
+        note.write_text(annotated, encoding="utf-8")
+    elif save_mode == "replace":
+        replacement = tmp_path / "replacement.md"
+        replacement.write_text(annotated, encoding="utf-8")
+        replacement.replace(note)
+    else:
+        note.unlink()
+    assert _published_urls(tmp_path, vault, DAY + timedelta(days=1)) == {
+        f"https://example.com/{section}" for section in DAILY_SECTIONS
+    }
+    weekly = collect_weekly(DAY + timedelta(days=6), tmp_path, vault)
+    assert len(weekly.candidates) == 2
+    assert not weekly.audit["exclusions"]
+    assert all("My private annotation" not in c.summary for c in weekly.candidates)
+    assert call("prepare", mode="production")["status"] == "CONFLICT"
+    if save_mode != "delete":
+        assert note.read_text(encoding="utf-8") == annotated
+
+
+@pytest.mark.parametrize("damage", ["prepared_only", "report", "receipt", "binding"])
+def test_history_still_rejects_unpublished_or_damaged_evidence(workflow, tmp_path, damage):
+    from pkm_workflow import ai_daily_production as publishing
+    from pkm_workflow.ai_daily_luna import _published_urls
+    from pkm_workflow.weekly_collection import collect_weekly
+
+    call, vault = workflow
+    prepared, _, _ = ready(workflow)
+    result = call("finalize", mode="production", run_id=prepared["run_id"], confirm_vault_write=True)
+    _, receipt = publishing._receipt_paths(tmp_path, DAY)
+    if damage == "prepared_only":
+        receipt.unlink()
+    elif damage == "report":
+        Path(result["shadow_report_path"]).write_text("{}", encoding="utf-8")
+    elif damage == "receipt":
+        receipt.write_text("{}", encoding="utf-8")
+    else:
+        value = publishing._read_sealed(receipt)
+        value.pop("payload_hash")
+        value["target_sha256"] = "sha256:" + "0" * 64
+        receipt.write_bytes(publishing._canonical_json(publishing._seal(value)))
+    assert not _published_urls(tmp_path, vault, DAY + timedelta(days=1))
+    assert not collect_weekly(DAY + timedelta(days=6), tmp_path, vault).candidates
+
+
+@pytest.mark.parametrize("retry_fails", [False, True])
+def test_collection_failure_has_one_same_run_retry(tmp_path, retry_fails):
+    calls = []
+
+    def collect(day):
+        calls.append(day)
+        if len(calls) == 1 or retry_fails:
+            raise TimeoutError("temporary collection outage")
+        # A successful collection with insufficient supply must terminate normally,
+        # not acquire an extra model or collection budget.
+        return CollectionResult(CoverageLevel.INSUFFICIENT, 0, 0, ())
+
+    def call(**kwargs):
+        return run_luna_stage("prepare", runtime_root=tmp_path, vault_daily_dir=tmp_path,
+                              today=DAY, collect=collect,
+                              context_loader=lambda: {"fields": {}, "user_context_hash": "sha256:" + "a" * 64},
+                              **kwargs)
+
+    first = call()
+    assert first["status"] == "COLLECTION_FAILED"
+    run = tmp_path / "scratch" / "runs" / first["run_id"]
+    error = (run / "collection-error.json").read_bytes()
+    assert call()["status"] == "COLLECTION_FAILED"
+    second = call(run_id=first["run_id"])
+    assert second["status"] == ("COLLECTION_RETRY_EXHAUSTED" if retry_fails else "COVERAGE_INSUFFICIENT")
+    assert second["run_id"] == first["run_id"]
+    assert (run / "collection-error.json").read_bytes() == error
+    third = call(run_id=first["run_id"])
+    assert third["status"] == second["status"]
+    assert len(calls) == 2
+    assert not (run / "repair.json").exists()
+    assert len(list((tmp_path / "scratch" / "runs").iterdir())) == 1
+
+
+def test_recovered_collection_keeps_normal_review_and_publication_budget(workflow):
+    call, vault = workflow
+
+    def timeout(_day):
+        raise TimeoutError("temporary outage")
+
+    failed = call("prepare", collect=timeout)
+    prepared = call("prepare", run_id=failed["run_id"])
+    assert prepared["status"] == "GENERATOR_READY"
+    assert call("prepare", run_id=prepared["run_id"], collect=timeout)["status"] == "GENERATOR_READY"
+    # ready() resumes the same run rather than creating a new generation.
+    def resumed(stage, **kwargs):
+        if stage == "prepare":
+            kwargs["run_id"] = prepared["run_id"]
+        return call(stage, **kwargs)
+
+    ready((resumed, vault))
+    result = call("finalize", mode="production", run_id=prepared["run_id"], confirm_vault_write=True)
+    assert result["status"] == "PUBLISHED"
+    assert result["role_execution_count"] == 2
+    assert result["repair_count"] == 0
+    assert result["vault_write"]
+
+
+@pytest.mark.parametrize("problem", ["invalid_collection", "partial_handoff"])
+def test_collection_recovery_does_not_retry_invalid_or_partially_prepared_runs(workflow, problem):
+    call, _ = workflow
+    calls = []
+
+    def failed(_day):
+        calls.append(1)
+        if problem == "invalid_collection":
+            raise ValueError("invalid source configuration")
+        raise TimeoutError("temporary outage")
+
+    first = call("prepare", collect=failed)
+    if problem == "partial_handoff":
+        (Path(first["report_path"]).parent / "generator-input.json").write_text("{}", encoding="utf-8")
+    result = call("prepare", run_id=first["run_id"], collect=failed)
+    assert result["status"] == ("COLLECTION_FAILED" if problem == "invalid_collection" else "COLLECTION_PREPARATION_INCOMPLETE")
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("attempts,damage", [(1, "missing"), (2, "missing"), (1, "corrupt")])
+def test_collection_attempt_damage_never_replenishes_budget(workflow, attempts, damage):
+    call, _ = workflow
+    calls = []
+
+    def failed(_day):
+        calls.append(1)
+        raise TimeoutError("temporary outage")
+
+    result = call("prepare", collect=failed)
+    run_id = result["run_id"]
+    for _ in range(attempts - 1):
+        result = call("prepare", run_id=run_id, collect=failed)
+    marker = Path(result["report_path"]).parent / f"collection-attempt-{attempts}.json"
+    if damage == "missing":
+        marker.unlink()
+    else:
+        marker.write_text("{}", encoding="utf-8")
+    for kwargs in ({"run_id": run_id}, {}, {"run_id": run_id}):
+        blocked = call("prepare", collect=failed, **kwargs)
+        assert blocked["status"] == "COLLECTION_ATTEMPT_STATE_INVALID"
+    assert len(calls) == attempts
 
 
 def test_interrupted_review_handoff_resumes_without_rewriting_input(workflow, monkeypatch):
@@ -209,9 +575,12 @@ def test_rejected_material_claim_requires_one_revision_then_fresh_review(workflo
     ]
     save(next_review["review_path"], response)
     exhausted = call("finalize", run_id=prepared["run_id"])
-    assert exhausted["status"] == "MODULE_REVIEW_INCOMPLETE"
+    assert exhausted["status"] == "PUBLISHED_PARTIAL"
     assert exhausted["missing_modules"] == ["research"]
-    assert exhausted["markdown_path"] is None
+    markdown = Path(exhausted["markdown_path"]).read_text(encoding="utf-8")
+    assert "未收录模块：学术研究" in markdown
+    assert "浏览器工具开始复用" in markdown
+    assert "## 🧪 学术研究" not in markdown
     assert exhausted["role_execution_count"] == 4
 
 
