@@ -114,7 +114,7 @@ def validate_draft(draft, evidence: dict[str, Candidate], context):
         ))
         optional = []
         watch_id = None
-        if signal["watch"] is not None:
+        if signal["watch"] is not None and watch_count < 2:
             watch_count += 1
             watch_id = f"{prefix}-watch"
             claims.append(claim(watch_id, signal["watch"], "editorial_inference"))
@@ -131,8 +131,6 @@ def validate_draft(draft, evidence: dict[str, Candidate], context):
             "watch_claim_ids": [watch_id] if watch_id else [],
             "lead_claim_id": lead_id, "optional_claim_ids": optional, "claims": claims,
         })
-    if watch_count > 2:
-        raise ValueError("WEEKLY_WATCH_LIMIT_EXCEEDED")
     return tuple(signals)
 
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from dataclasses import asdict, replace
 from datetime import timedelta
 
@@ -9,6 +10,8 @@ from . import ai_daily_production as publishing
 from .daily_brief import SECTIONS
 from .daily_content import _section_aware_excerpt, _semantic_terms
 from .v75_collection import AccessState, Candidate, CollectionResult, CoverageLevel, _normalize_url
+
+_EVENT_NOTICE = re.compile(r"\b(?:register|meetup|webinar|birds of a feather|tickets)\b", re.I)
 
 
 def _material(report_path, runtime):
@@ -69,6 +72,7 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
                 if (original.story_type not in SECTIONS
                         or original.access_state is not AccessState.FULL_FREE
                         or not original.fulltext_enriched
+                        or _EVENT_NOTICE.search(original.title)
                         or (original.story_type == "research" and original.evidence_role != "PAPER_PRIMARY")):
                     continue
                 already_read = original.evidence_id in published_ids

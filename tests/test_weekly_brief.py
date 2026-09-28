@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 import pytest
@@ -102,6 +102,23 @@ def test_weekly_drops_a_rejected_finding_without_losing_approved_case():
     assert "https://example.com/tool" not in markdown
 
 
+def test_weekly_optional_watchpoints_stop_at_two_without_discarding_signals():
+    draft = weekly_draft()
+    first = draft["signals"][0]
+    first["kind"] = "CASE"
+    first["watch"] = entry("核对下一次工具失败的记录。", "paper")
+    for index in (2, 3):
+        extra = json.loads(json.dumps(first))
+        extra["title"]["text"] = f"另一条独立信号 {index}"
+        extra["watch"]["text"] = f"观察额外信号 {index}"
+        draft["signals"].append(extra)
+    normalized = weekly_brief.validate_draft(
+        draft, {source.evidence_id: source for source in sources()}, CONTEXT,
+    )
+    assert len(normalized) == 3
+    assert sum(len(signal["watch_claim_ids"]) for signal in normalized) == 2
+
+
 def test_weekly_stages_publish_cross_lane_signal_without_six_headings(tmp_path):
     vault = tmp_path / "vault" / "30-Daily"
     vault.mkdir(parents=True)
@@ -141,6 +158,9 @@ def test_weekly_stages_publish_cross_lane_signal_without_six_headings(tmp_path):
     assert "https://example.com/paper" in note and "https://example.com/tool" in note
     assert "学术研究 ·" not in note and "AI 实践 ·" not in note
     assert stage("prepare")["status"] == "ALREADY_EXISTS"
+    assert _published_urls(tmp_path, vault, SUNDAY + timedelta(days=1)) == {
+        "https://example.com/tool",
+    }
 
 
 def test_weekly_considers_verified_daily_candidate_not_published_in_daily(tmp_path):
@@ -157,13 +177,21 @@ def test_weekly_considers_verified_daily_candidate_not_published_in_daily(tmp_pa
         published="2026-09-14", summary="The paper audits tool-use failures in a second setting.",
         content_type="evergreen", fulltext_enriched=True,
     )
+    invitation = Candidate(
+        evidence_id="invitation", source="Event Host", source_id="event-host",
+        canonical_origin_id="event-host", story_type="ai_practice",
+        title="Register for an Agentic Engineering meetup",
+        link="https://example.com/invitation", published="2026-09-14",
+        summary="The page invites readers to an evening meetup.",
+        content_type="news", fulltext_enriched=True, editorial_score=20000,
+    )
 
     def daily_stage(name, **kwargs):
         return run_luna_stage(
             name, today=monday, mode="production", runtime_root=tmp_path,
             vault_daily_dir=vault,
             collect=lambda _day: CollectionResult(
-                CoverageLevel.A, 6, 3, (research, practice, alternative),
+                CoverageLevel.A, 6, 4, (research, practice, alternative, invitation),
             ),
             context_loader=lambda: CONTEXT, **kwargs,
         )
@@ -195,10 +223,12 @@ def test_weekly_considers_verified_daily_candidate_not_published_in_daily(tmp_pa
     report = json.loads(Path(final["shadow_report_path"]).read_text(encoding="utf-8"))
     assert {row["link"] for row in report["weekly_candidate_snapshot"]} == {
         "https://example.com/paper", "https://example.com/tool", "https://example.com/unread",
+        "https://example.com/invitation",
     }
     assert "https://example.com/unread" not in _published_urls(tmp_path, vault, week_end)
     weekly = collect_weekly(week_end, tmp_path, vault)
     by_link = {candidate.link: candidate for candidate in weekly.candidates}
     assert "https://example.com/unread" in by_link
+    assert "https://example.com/invitation" not in by_link
     assert by_link["https://example.com/unread"].content_type == "evergreen"
     assert by_link["https://example.com/paper"].content_type == "weekly_excerpt"
