@@ -440,7 +440,10 @@ def _review(run, state):
     envelope, draft = _role_output(draft_path, "generator", edition=state["edition"])
     try:
         if state["edition"] == "weekly":
-            stories = weekly.validate_draft(draft, _candidates(state), state["context"])
+            stories = weekly.validate_draft(
+                draft, _candidates(state), state["context"],
+                date.fromisoformat(state["content_date"]),
+            )
         else:
             stories = brief.validate_draft(
                 draft, _candidates(state), state["context"], requested_sections=state["sections"],
