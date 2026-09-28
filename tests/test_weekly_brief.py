@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -68,7 +69,17 @@ def test_weekly_pattern_requires_independent_evidence():
         draft["signals"][0][key]["evidence_ids"] = ["paper"]
     draft["signals"][0]["body"] = [entry("研究原文记录工具调用失败。", "paper")]
     with pytest.raises(ValueError, match="WEEKLY_PATTERN_EVIDENCE_INSUFFICIENT"):
-        weekly_brief.validate_draft(draft, {"paper": sources()[0]}, CONTEXT)
+        weekly_brief.validate_draft(draft, {"paper": sources()[0]}, CONTEXT, SUNDAY)
+
+
+def test_same_origin_old_articles_do_not_qualify_as_this_week_development():
+    paper, tool = sources()
+    evidence = {
+        "paper": replace(paper, canonical_origin_id="one-publisher", published="2024-09-09"),
+        "tool": replace(tool, canonical_origin_id="one-publisher", published="2025-09-10"),
+    }
+    with pytest.raises(ValueError, match="WEEKLY_PATTERN_EVIDENCE_INSUFFICIENT"):
+        weekly_brief.validate_draft(weekly_draft(), evidence, CONTEXT, SUNDAY)
 
 
 def test_weekly_drops_a_rejected_finding_without_losing_approved_case():
@@ -82,7 +93,7 @@ def test_weekly_drops_a_rejected_finding_without_losing_approved_case():
         "watch": None,
     })
     stories = weekly_brief.validate_draft(
-        draft, {source.evidence_id: source for source in sources()}, CONTEXT,
+        draft, {source.evidence_id: source for source in sources()}, CONTEXT, SUNDAY,
     )
     decisions = {"decisions": [
         {"claim_id": row["claim_id"], "decision": (
@@ -113,7 +124,7 @@ def test_weekly_optional_watchpoints_stop_at_two_without_discarding_signals():
         extra["watch"]["text"] = f"观察额外信号 {index}"
         draft["signals"].append(extra)
     normalized = weekly_brief.validate_draft(
-        draft, {source.evidence_id: source for source in sources()}, CONTEXT,
+        draft, {source.evidence_id: source for source in sources()}, CONTEXT, SUNDAY,
     )
     assert len(normalized) == 3
     assert sum(len(signal["watch_claim_ids"]) for signal in normalized) == 2
@@ -156,6 +167,8 @@ def test_weekly_stages_publish_cross_lane_signal_without_six_headings(tmp_path):
     note = Path(result["vault_path"]).read_text(encoding="utf-8")
     assert "失败记录开始进入评测与验收" in note
     assert "https://example.com/paper" in note and "https://example.com/tool" in note
+    assert "[本周新增阅读 · Builder](https://example.com/tool)" in note
+    assert "本周保留" not in note
     assert "学术研究 ·" not in note and "AI 实践 ·" not in note
     assert stage("prepare")["status"] == "ALREADY_EXISTS"
     assert _published_urls(tmp_path, vault, SUNDAY + timedelta(days=1)) == {

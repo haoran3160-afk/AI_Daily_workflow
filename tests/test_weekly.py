@@ -43,6 +43,50 @@ def test_weekly_without_verified_daily_history_cannot_invent_six_modules(tmp_pat
     assert len(result.audit["missing_modules"]) == 6
 
 
+def test_weekly_keeps_verified_supplement_when_other_lanes_are_unavailable(tmp_path):
+    builder = Candidate(
+        evidence_id="builder", source="Approved source", title="One builder case",
+        link="https://example.com/builder-case", published="2026-09-20",
+        summary="The original case describes a documented product decision.",
+        content_type="evergreen", fulltext_enriched=True, story_type="builder",
+    )
+    result = collect_weekly(
+        date(2026, 9, 20), tmp_path, tmp_path,
+        supplement=lambda _sections: CollectionResult(
+            CoverageLevel.INSUFFICIENT, 6, 1, (builder,),
+            evidence_level=CoverageLevel.INSUFFICIENT,
+        ),
+    )
+    assert [candidate.link for candidate in result.candidates] == [builder.link]
+    assert result.coverage is CoverageLevel.B
+    assert "builder" not in result.audit["missing_modules"]
+    assert "research" in result.audit["missing_modules"]
+
+
+def test_weekly_event_filter_keeps_substantive_registration_guide(tmp_path):
+    invitation = Candidate(
+        evidence_id="invite", source="Event Host", title="Register for an agent meetup",
+        link="https://example.com/invite", published="2026-09-20",
+        summary="We are hosting an evening event. Register to attend.",
+        content_type="news", fulltext_enriched=True, story_type="ai_practice",
+        editorial_score=20000,
+    )
+    guide = Candidate(
+        evidence_id="guide", source="Engineer", title="Register tool calls and issue tickets",
+        link="https://example.com/guide", published="2026-09-20",
+        summary="The guide documents how tool registrations and issue tickets are audited.",
+        content_type="technical", fulltext_enriched=True, story_type="ai_practice",
+        editorial_score=5000,
+    )
+    result = collect_weekly(
+        date(2026, 9, 20), tmp_path, tmp_path,
+        supplement=lambda _sections: CollectionResult(
+            CoverageLevel.A, 6, 2, (invitation, guide),
+        ),
+    )
+    assert [candidate.link for candidate in result.candidates] == [guide.link]
+
+
 def test_weekly_uses_nonduplicate_backup_and_rejects_unqualified_supplements(tmp_path):
     from pkm_workflow.v75_collection import AccessState
     def supplement(_sections):

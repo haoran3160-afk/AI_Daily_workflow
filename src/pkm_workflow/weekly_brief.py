@@ -61,7 +61,7 @@ def role_envelope_schema() -> bytes:
     }), ensure_ascii=False).encode("utf-8")
 
 
-def validate_draft(draft, evidence: dict[str, Candidate], context):
+def validate_draft(draft, evidence: dict[str, Candidate], context, content_date: date):
     if not daily.matches_schema(draft, GENERATOR_SCHEMA):
         raise ValueError("OUTPUT_SCHEMA_INVALID")
     allowed_refs = daily._approved_context_paths(context)
@@ -90,8 +90,17 @@ def validate_draft(draft, evidence: dict[str, Candidate], context):
         cited = {eid for part in (*signal["body"], signal["takeaway"]) for eid in checked_ids(part)}
         if signal["kind"] == "PATTERN":
             origins = {evidence[eid].canonical_origin_id for eid in cited}
-            dates = {evidence[eid].published for eid in cited}
-            if len(cited) < 2 or (len(origins) < 2 and len(dates) < 2):
+            progressed_this_week = False
+            if len(origins) < 2:
+                week_start = content_date - timedelta(days=content_date.weekday())
+                try:
+                    dates = {date.fromisoformat(evidence[eid].published) for eid in cited}
+                except ValueError as error:
+                    raise ValueError("WEEKLY_PATTERN_DATE_INVALID") from error
+                progressed_this_week = (
+                    len(dates) >= 2 and all(week_start <= published <= content_date for published in dates)
+                )
+            if len(cited) < 2 or (len(origins) < 2 and not progressed_this_week):
                 raise ValueError("WEEKLY_PATTERN_EVIDENCE_INSUFFICIENT")
         refs = [
             path.removeprefix("approved_user_context.").removeprefix("fields.")
@@ -168,7 +177,8 @@ def render(day: date, coverage: CoverageLevel, evidence_level: CoverageLevel, si
              f"本周精选 · {day - timedelta(days=day.weekday())} 至 {day}"]
     lead = next((row["statement"] for signal in signals for row in signal["claims"]
                  if row["claim_id"] == signal.get("lead_claim_id")), None)
-    lines += ["", lead or f"本周保留 {len(signals)} 条经审核的信号。"]
+    if lead:
+        lines += ["", lead]
     for index, signal in enumerate(signals, 1):
         claims = {row["claim_id"]: row["statement"] for row in signal["claims"]}
         label = "共同信号" if signal["kind"] == "PATTERN" else "个案线索"
@@ -184,7 +194,11 @@ def render(day: date, coverage: CoverageLevel, evidence_level: CoverageLevel, si
                             for eid in row["evidence_ids"])
         for eid in ids:
             item = evidence[eid]
-            origin = item.source_links[0][0] if item.source_links else f"{item.source} · {item.published}"
+            raw_label = item.source_links[0][0] if item.source_links else item.source
+            parts = [part for part in raw_label.split(" · ") if part not in {
+                "原文未记录署名", "本周新增阅读", "本周已读回顾", "经典延伸阅读", item.published,
+            }]
+            origin = " · ".join(dict.fromkeys(parts)) or item.source
             reading = "本周已读回顾" if item.content_type == "weekly_excerpt" else "本周新增阅读"
             classic = " · 经典延伸阅读" if item.content_type == "evergreen" else ""
             lines.append(f"[{reading} · {origin}]({item.link}) · 原始日期 {item.published}{classic}")

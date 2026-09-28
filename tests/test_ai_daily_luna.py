@@ -283,6 +283,47 @@ def test_archived_review_does_not_weaken_live_model_validation(workflow, tmp_pat
     assert material["weekly_candidates"] == material["candidates"]
 
 
+def test_legacy_report_without_candidate_snapshot_excludes_unpublished_choices(workflow, tmp_path):
+    from pkm_workflow import ai_daily_luna as engine
+    from pkm_workflow.weekly_collection import _material
+
+    call, vault = workflow
+    candidates = tuple(Candidate(
+        evidence_id=f"evidence-{section}", source="Research Lab",
+        title=f"{section} item", link=f"https://example.com/{section}",
+        published=str(DAY), summary="Verified original source body. " * 20,
+        content_type="research", fulltext_enriched=True, story_type=section,
+        evidence_role="PAPER_PRIMARY" if section == "research" else "PRIMARY_OR_EXPERT",
+    ) for section in DAILY_SECTIONS) + (Candidate(
+        evidence_id="unread", source="Another Lab", title="Unpublished candidate",
+        link="https://example.com/unread", published=str(DAY),
+        summary="Verified original body for another research candidate. " * 20,
+        content_type="research", fulltext_enriched=True, story_type="research",
+        evidence_role="PAPER_PRIMARY",
+    ),)
+    prepared = call("prepare", collect=lambda _day: CollectionResult(
+        CoverageLevel.A, 14, 14, candidates,
+    ))
+    def resumed(stage, **kwargs):
+        if stage == "prepare":
+            kwargs["run_id"] = prepared["run_id"]
+        return call(stage, **kwargs)
+    ready((resumed, vault))
+    root = Path(prepared["draft_path"]).parent
+    engine._sealed_write(root / "run-report.json", {"model": MODEL})
+    archive = tmp_path / "archive"
+    archive.mkdir()
+    report = archive / f"{prepared['run_id']}.json"
+    report.write_bytes((root / "run-report.json").read_bytes())
+    material = _material(report, tmp_path)
+    assert {row["link"] for row in material["weekly_candidates"]} == {
+        f"https://example.com/{section}" for section in DAILY_SECTIONS
+    }
+    assert "https://example.com/unread" not in {
+        row["link"] for row in material["weekly_candidates"]
+    }
+
+
 @pytest.mark.parametrize("save_mode", ["inplace", "replace", "delete"])
 def test_published_history_survives_note_edits(workflow, tmp_path, save_mode):
     from pkm_workflow.ai_daily_luna import _published_urls

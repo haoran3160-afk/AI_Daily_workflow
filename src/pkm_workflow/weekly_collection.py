@@ -11,7 +11,13 @@ from .daily_brief import SECTIONS
 from .daily_content import _section_aware_excerpt, _semantic_terms
 from .v75_collection import AccessState, Candidate, CollectionResult, CoverageLevel, _normalize_url
 
-_EVENT_NOTICE = re.compile(r"\b(?:register|meetup|webinar|birds of a feather|tickets)\b", re.I)
+_EVENT_TOPIC = re.compile(r"\b(?:meetup|webinar|birds of a feather)\b", re.I)
+_EVENT_INTENT = re.compile(r"\b(?:register|tickets?|rsvp|join us|hosting|invites?|event)\b", re.I)
+
+
+def _event_notice(candidate):
+    return bool(_EVENT_TOPIC.search(candidate.title)
+                and _EVENT_INTENT.search(candidate.title + " " + candidate.summary[:600]))
 
 
 def _material(report_path, runtime):
@@ -34,9 +40,12 @@ def _material(report_path, runtime):
     stories, _, _, _ = luna._check_review(run, state, archived_model=report["model"])
     candidates = luna._candidates(state)
     packet = luna._read(run / "generator-input.json")["candidates"]
+    selected_ids = {eid for story in stories for claim in story["claims"]
+                    for eid in claim["evidence_ids"]}
     candidates = [
         asdict(candidates[row["evidence_id"]]) | {"summary": row["summary"],
-        "observed_author": row.get("observed_author")} for row in packet
+        "observed_author": row.get("observed_author")}
+        for row in packet if row["evidence_id"] in selected_ids
     ]
     return {"stories": list(stories), "candidates": candidates, "weekly_candidates": candidates}
 
@@ -72,7 +81,7 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
                 if (original.story_type not in SECTIONS
                         or original.access_state is not AccessState.FULL_FREE
                         or not original.fulltext_enriched
-                        or _EVENT_NOTICE.search(original.title)
+                        or _event_notice(original)
                         or (original.story_type == "research" and original.evidence_role != "PAPER_PRIMARY")):
                     continue
                 already_read = original.evidence_id in published_ids
@@ -109,27 +118,30 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
                if section not in {candidate.story_type for candidate in pool.values()}]
     supplemented = []
     supplement_audit = {}
+    supplement_unhealthy = False
     if missing and supplement is not None:
         extra = supplement(tuple(missing))
         supplement_audit = dict(extra.audit)
-        if extra.coverage is not CoverageLevel.INSUFFICIENT and extra.evidence_level is not CoverageLevel.INSUFFICIENT:
-            for section in missing:
-                options = sorted(
-                    (candidate for candidate in extra.candidates if candidate.story_type == section
-                     and candidate.access_state is AccessState.FULL_FREE
-                     and candidate.fulltext_enriched
-                     and (section != "research" or candidate.evidence_role == "PAPER_PRIMARY")),
-                    key=lambda candidate: (-candidate.editorial_score, candidate.evidence_id),
-                )[:2]
-                for selected in options:
-                    key = _normalize_url(selected.link)
-                    if key in pool:
-                        continue
-                    pool[key] = replace(selected, source_links=((
-                        f"{selected.source} · {selected.published}", selected.link,
-                    ),))
-                    if section not in supplemented:
-                        supplemented.append(section)
+        supplement_unhealthy = (extra.coverage is CoverageLevel.INSUFFICIENT
+                                or extra.evidence_level is CoverageLevel.INSUFFICIENT)
+        for section in missing:
+            options = sorted(
+                (candidate for candidate in extra.candidates if candidate.story_type == section
+                 and candidate.access_state is AccessState.FULL_FREE
+                 and candidate.fulltext_enriched
+                 and not _event_notice(candidate)
+                 and (section != "research" or candidate.evidence_role == "PAPER_PRIMARY")),
+                key=lambda candidate: (-candidate.editorial_score, candidate.evidence_id),
+            )[:2]
+            for selected in options:
+                key = _normalize_url(selected.link)
+                if key in pool:
+                    continue
+                pool[key] = replace(selected, source_links=((
+                    f"{selected.source} · {selected.published}", selected.link,
+                ),))
+                if section not in supplemented:
+                    supplemented.append(section)
     ranked = sorted(pool.values(), key=lambda candidate: (
         -candidate.editorial_score, candidate.evidence_id,
     ))
@@ -155,7 +167,8 @@ def collect_weekly(day, runtime, vault, *, supplement=None):
         add(candidate)
     absent = [section for section in SECTIONS if section not in {item.story_type for item in pool.values()}]
     coverage = (CoverageLevel.INSUFFICIENT if not chosen else
-                CoverageLevel.B if exclusions or supplement_audit.get("retryable_collection_failure") else CoverageLevel.A)
+                CoverageLevel.B if exclusions or supplement_unhealthy
+                or supplement_audit.get("retryable_collection_failure") else CoverageLevel.A)
     return CollectionResult(coverage, len(SECTIONS), len(chosen), tuple(chosen), coverage,
                             len(chosen), {"period_start": str(start), "period_end": str(day),
                             "published_days": reports, "missing_modules": absent,
