@@ -19,7 +19,8 @@ def test_cognition_day_receives_only_its_editorial_guidance(tmp_path):
     )
     assert result["status"] == "GENERATOR_READY"
     instructions = Path(result["instructions_path"]).read_text(encoding="utf-8")
-    assert "输入什么、得到什么" in instructions
+    assert "任务是什么、输入什么" in instructions
+    assert "能观察什么输出" in instructions
     assert "被挑战的假设" in instructions
     assert "未经查新" not in instructions
     assert "领投" not in instructions

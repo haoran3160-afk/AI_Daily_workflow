@@ -295,7 +295,7 @@ def _model_candidate_payload(
     context_terms: set[str] | None = None,
 ) -> dict[str, object]:
     payload = candidate.model_payload()
-    if candidate.content_type == "weekly_excerpt":
+    if candidate.content_type == "weekly_excerpt" or candidate.source_links:
         # Preserve per-source dates and interpretation labels; do not re-rank
         # sentences across different days and accidentally lose their attribution.
         payload["summary"] = candidate.summary[:max_chars]
